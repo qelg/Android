@@ -40,7 +40,7 @@ internal fun isCurrentTokenUsageRefresh(
 internal fun TokenUsageState.clearPersistedTokenDetails(): TokenUsageState =
     copy(cumulative = null, systemPrompt = null)
 
-internal fun initialTokenUsage(session: HermesSession): TokenUsageState? =
+internal fun initialTokenUsage(session: HarnessSession): TokenUsageState? =
     session.cumulativeTokenUsage?.let { TokenUsageState(cumulative = it) }
 
 internal suspend fun <T> runVoiceTranscription(
@@ -58,7 +58,7 @@ internal suspend fun <T> runVoiceTranscription(
 data class ChatUiState(
     val configured: Boolean = false,
     val connecting: Boolean = false,
-    val sessions: List<HermesSession> = emptyList(),
+    val sessions: List<HarnessSession> = emptyList(),
     val search: String = "",
     val selectedId: String? = null,
     val treeParentId: String? = null,
@@ -66,7 +66,7 @@ data class ChatUiState(
     val unreadCounts: Map<String, Int> = emptyMap(),
     val readUpdates: Map<String, String> = emptyMap(),
     val historyLoadedFor: String? = null,
-    val title: String = "Hermes Chat",
+    val title: String = "Harness Android",
     val items: List<ChatItem> = emptyList(),
     val active: Boolean = false,
     val modelCatalog: ModelCatalog = ModelCatalog(),
@@ -91,7 +91,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     val updateManager = UpdateManager(application)
     private var draftNamespace = ""
     private val draftRevisions = mutableMapOf<Pair<String, String>, Long>()
-    private var client: HermesClient? = null
+    private var client: HarnessClient? = null
     private var runtimeId: String? = null
     private var usageStoredId: String? = null
     private var connectionJob: Job? = null
@@ -123,32 +123,6 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             }
             return
         }
-        if (config.token.isBlank()) {
-            _state.update { it.copy(error = ErrorMessage("API key is required.")) }
-            return
-        }
-        if (
-            config.transcriptionBackend == TranscriptionBackend.DASHBOARD &&
-                !config.isAllowedDashboardEndpoint()
-        ) {
-            _state.update { it.copy(error = ErrorMessage("A valid Dashboard URL is required.")) }
-            return
-        }
-        if (
-            config.transcriptionBackend == TranscriptionBackend.DASHBOARD &&
-                config.dashboardToken.isBlank() &&
-                (config.username.isBlank() || config.password.isBlank())
-        ) {
-            _state.update {
-                it.copy(
-                    error =
-                        ErrorMessage(
-                            "Dashboard token or Dashboard username and password are required."
-                        )
-                )
-            }
-            return
-        }
         credentials.save(config)
         draftNamespace = config.normalizedBaseUrl
         val drafts = draftStore.load(draftNamespace)
@@ -164,7 +138,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         runtimeToStored.clear()
         sessionModelOverrides.clear()
         val version = ++connectionVersion
-        val next = HermesClient(config, viewModelScope)
+        val next = HarnessClient(config, viewModelScope)
         client = next
         _state.update {
             it.copy(
@@ -182,7 +156,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 error = null,
                 reconnectSeconds = null,
                 tokenUsage = null,
-                transcriptionEnabled = config.transcriptionBackend == TranscriptionBackend.DASHBOARD,
+                transcriptionEnabled = false,
             )
         }
         eventJob =
@@ -236,7 +210,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
 
     fun setSearch(value: String) = _state.update { it.copy(search = value) }
 
-    fun showTree(session: HermesSession) {
+    fun showTree(session: HarnessSession) {
         val tree = buildSessionTree(state.value.sessions)
         if (tree[session.id].isNullOrEmpty()) {
             select(session)
@@ -297,12 +271,12 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         _state.update { it.copy(drafts = updateDrafts(it.drafts, submitted.sessionId, "")) }
     }
 
-    private suspend fun refreshSessions(api: HermesClient, version: Long) {
+    private suspend fun refreshSessions(api: HarnessClient, version: Long) {
         val result = api.sessions()
         if (client !== api || connectionVersion != version) return
         val sessions =
             applySessionModelOverrides(
-                result.map(HermesSession::fromJson).filter { it.id.isNotBlank() },
+                result.map(HarnessSession::fromJson).filter { it.id.isNotBlank() },
                 sessionModelOverrides,
             )
         _state.update {
@@ -322,7 +296,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         }
     }
 
-    private suspend fun refreshModels(api: HermesClient, session: HermesSession?, version: Long) {
+    private suspend fun refreshModels(api: HarnessClient, session: HarnessSession?, version: Long) {
         val selectedModel =
             session?.let {
                 sessionModelForLineage(
@@ -332,7 +306,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                     sessionModelOverrides,
                 )
             }
-        val catalog = api.modelOptions(selectedModel)
+        val catalog = api.modelOptions(session?.id)
         if (
             client !== api ||
                 connectionVersion != version ||
@@ -361,6 +335,10 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     fun selectModel(selection: ModelSelection) {
         val selectedId = state.value.selectedId ?: return
         sessionModelOverrides[selectedId] = selection.model
+        viewModelScope.launch {
+            runCatching { client?.selectModel(selectedId, selection) ?: error("Not connected") }
+                .onFailure(::showError)
+        }
         _state.update {
             it.copy(
                 modelCatalog = it.modelCatalog.copy(selected = selection),
@@ -445,10 +423,10 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             runCatching {
                     val selection = state.value.modelCatalog.selected
                     val result = api.createSession(selection?.model)
-                    val session = HermesSession.fromJson(result)
+                    val session = HarnessSession.fromJson(result)
                     runtimeId =
                         session.id.takeIf(String::isNotBlank)
-                            ?: error("Hermes returned no session ID")
+                            ?: error("Harness returned no session ID")
                     val stored = runtimeId!!
                     usageStoredId = stored
                     runtimeToStored[runtimeId!!] = stored
@@ -475,7 +453,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         }
     }
 
-    fun select(session: HermesSession, selectedFromTree: Boolean = false) {
+    fun select(session: HarnessSession, selectedFromTree: Boolean = false) {
         if (state.value.active || state.value.connecting) return
         val api = client ?: return
         selectionJob?.cancel()
@@ -550,7 +528,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         viewModelScope.launch {
             runCatching {
                     if (runtimeId == null) createAndAwait()
-                    val id = runtimeId ?: error("Hermes returned no session ID")
+                    val id = runtimeId ?: error("Harness returned no session ID")
                     _state.update {
                         it.copy(
                             items =
@@ -614,9 +592,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     fun answerClarify(text: String) {
         if (text.isBlank()) return
         _state.update {
-            it.copy(
-                error = ErrorMessage("The Hermes API Server does not expose clarify responses.")
-            )
+            it.copy(error = ErrorMessage("Harness does not expose clarify responses."))
         }
     }
 
@@ -948,7 +924,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 showError(
                     IllegalStateException(
                         event.payload["message"]?.jsonPrimitive?.contentOrNull
-                            ?: "Unknown Hermes error"
+                            ?: "Unknown Harness error"
                     )
                 )
         }
@@ -1222,7 +1198,7 @@ internal fun clearUnread(unread: Map<String, Int>, sessionId: String): Map<Strin
 internal fun resolveStoredSessionId(
     eventId: String,
     runtimeToStored: Map<String, String>,
-    sessions: List<HermesSession>,
+    sessions: List<HarnessSession>,
 ): String =
     runtimeToStored[eventId]
         ?: sessions.firstOrNull { it.id == eventId || it.runtimeId == eventId }?.id
@@ -1230,7 +1206,7 @@ internal fun resolveStoredSessionId(
 
 internal fun remapUnread(
     unread: Map<String, Int>,
-    sessions: List<HermesSession>,
+    sessions: List<HarnessSession>,
 ): Map<String, Int> =
     unread.entries.fold(emptyMap()) { result, (key, count) ->
         val storedId = sessions.firstOrNull { it.id == key || it.runtimeId == key }?.id ?: key
@@ -1297,7 +1273,8 @@ private fun cancelRunningTools(items: List<ChatItem>, completedAt: Instant): Lis
     }
 
 private fun Map<String, JsonElement>.instant(): Instant? =
-    listOf("timestamp", "created_at", "updated_at", "time").firstNotNullOfOrNull { key ->
+    listOf("timestamp", "created_at", "created_at_ms", "updated_at", "time").firstNotNullOfOrNull {
+        key ->
         this[key]?.jsonPrimitive?.let { prim ->
             prim.contentOrNull?.let { runCatching { Instant.parse(it) }.getOrNull() }
                 ?: prim.doubleOrNull?.let { Instant.ofEpochMilli((it * 1000).toLong()) }

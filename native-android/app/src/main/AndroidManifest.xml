@@ -1,13 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <application
         android:allowBackup="false"
         android:fullBackupContent="false"
-        android:theme="@style/Theme.HermesChat"
-        android:label="Hermes Chat Native"
+        android:theme="@style/Theme.HarnessAndroid"
+        android:label="Harness Android"
         android:usesCleartextTraffic="true">
         <activity
             android:name=".MainActivity"

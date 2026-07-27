@@ -1,41 +1,26 @@
 # Harness Android
 
-A native Kotlin/Jetpack Compose Android client. The backend migration from Hermes Agent to qelg/harness is tracked in the follow-up change.
-
-## Download
+A native Kotlin/Jetpack Compose Android client for [qelg/harness](https://github.com/qelg/harness).
 
 **[Download the newest signed Android APK](https://github.com/qelg/Android/releases/download/latest/harness-android-latest.apk)**
 
-This stable link is updated automatically after every successful CI build on `main`.
+## Features
 
-The app uses Hermes Agent's authenticated API Server for the coherent session/chat runtime. Optional voice transcription can be routed separately through the Dashboard/Web backend without mixing session IDs, history, or event streams.
+- List, search, create, and resume persistent Harness sessions
+- Load durable message history and stream assistant/tool activity over Harness SSE
+- Select a provider/model for a session
+- Keep drafts and read state locally
+- Store an optional bearer token using Android Keystore
+- Discover providers and tools exposed by Harness
 
-## MVP features
+Capabilities qelg/harness does not expose—voice transcription, approval responses, run cancellation,
+and detailed token/context accounting—stay unavailable rather than using a separate legacy backend.
 
-- Responsive, fully paginated session list including root, compression-child, and `delegate_task` sessions
-- Create and resume persistent Hermes sessions
-- Search sessions by title, preview, source, or ID
-- Stream assistant responses and structured tool activity through controllable API runs
-- Review dangerous tool requests and allow once, always allow, or deny
-- Stop a running response through the server-side run control endpoint
-- Optionally transcribe voice input through the Dashboard/Web backend
-- Group four or more consecutive tool calls with expandable details
-- Store API and optional Dashboard credentials in platform secure storage
-- Show cumulative token usage and enabled API-server toolsets
+## Setup
 
-The API Server currently does not expose audio transcription, interactive clarify responses, detailed context composition, or per-session model switching. Audio transcription can be restored safely through the optional Dashboard route; the other Dashboard RPCs remain disabled to keep the API session/runtime path coherent.
-
-## Hermes setup
-
-Enable Hermes Agent's authenticated API Server and connect using its URL and `API_SERVER_KEY`. The default local endpoint is:
-
-```text
-http://127.0.0.1:8642
-```
-
-For a phone, publish it through a trusted encrypted network such as Tailscale and use HTTPS, for example `https://host.example.ts.net:8643`. Never expose the API key or an unencrypted public endpoint.
-
-HTTPS is required for public hosts. Plain HTTP is accepted only for localhost, private-network addresses, and Tailscale hosts because the underlying tunnel already encrypts tailnet traffic.
+Run qelg/harness and connect to its API (default `http://127.0.0.1:8000`). For a phone, use a
+trusted encrypted network and HTTPS, for example `https://harness.example.ts.net:8000`. Plain HTTP
+is accepted only for localhost, private-network addresses, and Tailscale hosts.
 
 ## Build and test
 

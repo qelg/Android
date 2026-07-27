@@ -54,14 +54,14 @@ class MainActivity : ComponentActivity() {
             MaterialTheme(
                 colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
             ) {
-                HermesApp()
+                HarnessApp()
             }
         }
     }
 }
 
 @Composable
-private fun HermesApp(vm: ChatViewModel = viewModel()) {
+private fun HarnessApp(vm: ChatViewModel = viewModel()) {
     val state by vm.state.collectAsStateWithLifecycle()
     Box(
         Modifier.fillMaxSize()
@@ -81,16 +81,6 @@ internal fun Modifier.fullScreenDetailBackground(active: Boolean): Modifier =
 private fun ConnectionScreen(connect: (ConnectionConfig) -> Unit) {
     var url by rememberSaveable { mutableStateOf("") }
     var token by rememberSaveable { mutableStateOf("") }
-    var dashboardTranscription by rememberSaveable { mutableStateOf(false) }
-    var dashboardUrl by rememberSaveable { mutableStateOf("") }
-    var dashboardToken by rememberSaveable { mutableStateOf("") }
-    var dashboardUsername by rememberSaveable { mutableStateOf("") }
-    var dashboardPassword by rememberSaveable { mutableStateOf("") }
-    val dashboardReady =
-        !dashboardTranscription ||
-            (dashboardUrl.isNotBlank() &&
-                (dashboardToken.isNotBlank() ||
-                    (dashboardUsername.isNotBlank() && dashboardPassword.isNotBlank())))
     Surface(Modifier.fillMaxSize()) {
         Column(
             Modifier.fillMaxWidth()
@@ -100,92 +90,33 @@ private fun ConnectionScreen(connect: (ConnectionConfig) -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Spacer(Modifier.height(40.dp))
-            Text("Connect to Hermes", style = MaterialTheme.typography.headlineMedium)
-            Text("Sessions, history, chat and run events use the authenticated API Server.")
+            Text("Connect to Harness", style = MaterialTheme.typography.headlineMedium)
+            Text("Sessions, message history, and streaming responses use the qelg/harness API.")
             OutlinedTextField(
                 url,
                 { url = it },
                 Modifier.fillMaxWidth(),
-                label = { Text("API Server URL") },
-                placeholder = { Text("https://home.example.ts.net:8643") },
+                label = { Text("Harness URL") },
+                placeholder = { Text("https://harness.example.ts.net:8000") },
                 singleLine = true,
             )
             OutlinedTextField(
                 token,
                 { token = it },
                 Modifier.fillMaxWidth(),
-                label = { Text("API key") },
+                label = { Text("Bearer token (optional)") },
                 singleLine = true,
                 visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
             )
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("Dashboard transcription")
-                    Text(
-                        "Route only voice transcription through the Web backend.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                Switch(dashboardTranscription, { dashboardTranscription = it })
-            }
-            if (dashboardTranscription) {
-                OutlinedTextField(
-                    dashboardUrl,
-                    { dashboardUrl = it },
-                    Modifier.fillMaxWidth(),
-                    label = { Text("Dashboard URL") },
-                    placeholder = { Text("https://home.example.ts.net:9119") },
-                    singleLine = true,
-                )
-                OutlinedTextField(
-                    dashboardToken,
-                    { dashboardToken = it },
-                    Modifier.fillMaxWidth(),
-                    label = { Text("Dashboard session token (optional)") },
-                    singleLine = true,
-                    visualTransformation =
-                        androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                )
-                OutlinedTextField(
-                    dashboardUsername,
-                    { dashboardUsername = it },
-                    Modifier.fillMaxWidth(),
-                    label = { Text("Dashboard username (alternative)") },
-                    singleLine = true,
-                )
-                OutlinedTextField(
-                    dashboardPassword,
-                    { dashboardPassword = it },
-                    Modifier.fillMaxWidth(),
-                    label = { Text("Dashboard password") },
-                    singleLine = true,
-                    visualTransformation =
-                        androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                )
-            }
             Button(
-                {
-                    connect(
-                        ConnectionConfig(
-                            baseUrl = url,
-                            token = token,
-                            dashboardBaseUrl = dashboardUrl,
-                            dashboardToken = dashboardToken,
-                            username = dashboardUsername,
-                            password = dashboardPassword,
-                            transcriptionBackend =
-                                if (dashboardTranscription) TranscriptionBackend.DASHBOARD
-                                else TranscriptionBackend.DISABLED,
-                        )
-                    )
-                },
-                enabled = url.isNotBlank() && token.isNotBlank() && dashboardReady,
+                { connect(ConnectionConfig(baseUrl = url, token = token)) },
+                enabled = url.isNotBlank(),
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("Connect")
             }
             Text(
-                "API keys, Dashboard tokens and passwords are encrypted with Android Keystore.",
+                "If supplied, the bearer token is encrypted with Android Keystore.",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
@@ -616,7 +547,7 @@ private fun ChatPane(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                                 Spacer(Modifier.width(8.dp))
-                                Text("Hermes is working…")
+                                Text("Harness is working…")
                             }
                         }
                 }
@@ -731,7 +662,7 @@ private fun ChatPane(
                     Modifier.weight(1f),
                     placeholder = {
                         Text(
-                            state.clarify?.question?.takeIf(String::isNotBlank) ?: "Message Hermes"
+                            state.clarify?.question?.takeIf(String::isNotBlank) ?: "Message Harness"
                         )
                     },
                     maxLines = 6,
@@ -1670,7 +1601,7 @@ private fun VoiceButton(vm: ChatViewModel, enabled: Boolean, onText: (String) ->
         file = null
     }
     fun start() {
-        val output = File.createTempFile("hermes-voice-", ".m4a", context.cacheDir)
+        val output = File.createTempFile("harness-voice-", ".m4a", context.cacheDir)
         @Suppress("DEPRECATION")
         val next =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(context)
@@ -1781,7 +1712,7 @@ private fun UpdateDialog(updateState: UpdateState, onDownload: () -> Unit, onDis
                 when {
                     updateState.checking -> Text("Connecting to GitHub…")
                     updateState.downloading -> {
-                        Text("Downloading Hermes Chat ${updateState.latestVersion ?: ""}")
+                        Text("Downloading Harness Android ${updateState.latestVersion ?: ""}")
                         Spacer(Modifier.height(4.dp))
                         LinearProgressIndicator(
                             progress = { updateState.downloadProgress },
