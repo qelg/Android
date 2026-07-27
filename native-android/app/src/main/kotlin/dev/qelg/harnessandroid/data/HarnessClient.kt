@@ -1,11 +1,17 @@
 package dev.qelg.harnessandroid.data
 
 import java.io.Closeable
+import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.*
 import okhttp3.Call
@@ -17,14 +23,16 @@ import okhttp3.RequestBody.Companion.toRequestBody
 /** HTTP/SSE client for the public API exposed by qelg/harness. */
 class HarnessClient(
     private val config: ConnectionConfig,
-    @Suppress("UNUSED_PARAMETER") scope: CoroutineScope,
-    private val client: OkHttpClient = OkHttpClient(),
+    private val scope: CoroutineScope,
+    private val client: OkHttpClient =
+        OkHttpClient.Builder().readTimeout(0, TimeUnit.MILLISECONDS).build(),
 ) : Closeable {
     private val json = Json { ignoreUnknownKeys = true }
     private val eventChannel = Channel<GatewayEvent>(Channel.UNLIMITED)
     val events: Flow<GatewayEvent> = eventChannel.receiveAsFlow()
     @Volatile private var closed = false
-    @Volatile private var activeCall: Call? = null
+    @Volatile private var watcherCall: Call? = null
+    private var watcherJob: Job? = null
 
     suspend fun connect() {
         check(!closed) { "Harness client is closed" }
@@ -113,65 +121,100 @@ class HarnessClient(
     }
 
     suspend fun submit(sessionId: String, text: String, model: String? = null) {
-        check(activeCall == null) { "A Harness turn is already active" }
-        try {
-            stream(sessionId, text)
-        } finally {
-            eventChannel.send(GatewayEvent("session.inactive", sessionId, emptyMap()))
-        }
+        request(
+            "POST",
+            "/sessions/${sessionId.urlEncode()}/messages",
+            buildJsonObject { put("content", text) },
+        )
     }
 
-    private suspend fun stream(sessionId: String, text: String) =
+    fun watchSession(sessionId: String, sinceId: Long? = null) {
+        stopWatching()
+        watcherJob =
+            scope.launch(Dispatchers.IO) {
+                var cursor = sinceId
+                while (isActive && !closed) {
+                    try {
+                        cursor = streamUpdates(sessionId, cursor)
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (_: java.io.IOException) {
+                        if (isActive && !closed) delay(RECONNECT_DELAY_MS)
+                    } catch (error: Throwable) {
+                        if (isActive && !closed) {
+                            eventChannel.send(
+                                GatewayEvent(
+                                    "error",
+                                    sessionId,
+                                    mapOf(
+                                        "message" to
+                                            JsonPrimitive(
+                                                error.message ?: "Session update stream failed"
+                                            )
+                                    ),
+                                )
+                            )
+                            delay(RECONNECT_DELAY_MS)
+                        }
+                    }
+                }
+            }
+    }
+
+    fun stopWatching() {
+        watcherCall?.cancel()
+        watcherCall = null
+        watcherJob?.cancel()
+        watcherJob = null
+    }
+
+    private suspend fun streamUpdates(sessionId: String, sinceId: Long?): Long? =
         withContext(Dispatchers.IO) {
+            val suffix = sinceId?.let { "?since_id=$it" }.orEmpty()
             val request =
-                requestBuilder("/sessions/${sessionId.urlEncode()}/messages/stream")
+                requestBuilder("/sessions/${sessionId.urlEncode()}/messages/updates$suffix")
                     .header("Accept", "text/event-stream")
-                    .post(
-                        buildJsonObject { put("content", text) }
-                            .toString()
-                            .toRequestBody(JSON_MEDIA_TYPE)
-                    )
+                    .get()
                     .build()
             val call = client.newCall(request)
-            activeCall = call
-            var failure: String? = null
+            watcherCall = call
+            var cursor = sinceId
             try {
                 call.execute().use { response ->
                     val body = response.body
                     check(response.isSuccessful) {
                         "Harness HTTP ${response.code}: ${body?.string().orEmpty()}"
                     }
-                    val source = body?.source() ?: error("Harness returned no event stream")
+                    val source = body?.source() ?: error("Harness returned no update stream")
                     var eventName: String? = null
+                    var eventId: Long? = null
                     val data = mutableListOf<String>()
                     suspend fun dispatch() {
-                        if (data.isNotEmpty())
-                            failure =
-                                failure
-                                    ?: translateEvent(
-                                        eventName.orEmpty(),
-                                        json.parseToJsonElement(data.joinToString("\n")).jsonObject,
-                                        sessionId,
-                                    )
+                        if (data.isNotEmpty()) {
+                            val event = json.parseToJsonElement(data.joinToString("\n")).jsonObject
+                            translateEvent(eventName.orEmpty(), event, sessionId)
+                            eventId?.let { cursor = maxOf(cursor ?: 0L, it) }
+                        }
                         eventName = null
+                        eventId = null
                         data.clear()
                     }
                     while (!source.exhausted()) {
                         val line = source.readUtf8Line() ?: break
                         when {
                             line.isEmpty() -> dispatch()
+                            line.startsWith("id:") ->
+                                eventId = line.substringAfter(':').trim().toLongOrNull()
                             line.startsWith("event:") -> eventName = line.substringAfter(':').trim()
                             line.startsWith("data:") -> data += line.substringAfter(':').trimStart()
                         }
                     }
                     dispatch()
                 }
-            } catch (error: java.io.IOException) {
-                if (!call.isCanceled()) throw error
             } finally {
-                if (activeCall === call) activeCall = null
+                if (watcherCall === call) watcherCall = null
             }
-            failure?.let { error(it) }
+            cursor
         }
 
     private suspend fun translateEvent(
@@ -179,14 +222,21 @@ class HarnessClient(
         event: JsonObject,
         sessionId: String,
     ): String? {
-        val payload = event["payload"] as? JsonObject ?: event
-        when (name.ifBlank { event.string("name").orEmpty() }) {
+        val eventRecord = event["event"] as? JsonObject ?: event
+        val payload = eventRecord["payload"] as? JsonObject ?: eventRecord
+        val eventName = name.ifBlank { eventRecord.string("name").orEmpty() }
+        val timestamp = eventRecord["created_at_ms"]
+        fun values(vararg entries: Pair<String, JsonElement>): Map<String, JsonElement> = buildMap {
+            entries.forEach { (key, value) -> put(key, value) }
+            timestamp?.let { put("created_at_ms", it) }
+        }
+        when (eventName) {
             "llm.delta" ->
                 eventChannel.send(
                     GatewayEvent(
                         "message.delta",
                         sessionId,
-                        mapOf("text" to (payload["delta"] ?: JsonPrimitive(""))),
+                        values("text" to (payload["delta"] ?: JsonPrimitive(""))),
                     )
                 )
             "tool.call.requested" ->
@@ -194,7 +244,7 @@ class HarnessClient(
                     GatewayEvent(
                         "tool.start",
                         sessionId,
-                        mapOf(
+                        values(
                             "name" to (payload["tool"] ?: JsonPrimitive("tool")),
                             "tool_call_id" to (payload["run_id"] ?: JsonPrimitive("tool")),
                             "arguments" to (payload["input"] ?: JsonObject(emptyMap())),
@@ -206,7 +256,7 @@ class HarnessClient(
                     GatewayEvent(
                         "tool.complete",
                         sessionId,
-                        mapOf(
+                        values(
                             "name" to (payload["tool"] ?: JsonPrimitive("tool")),
                             "tool_call_id" to (payload["run_id"] ?: JsonPrimitive("tool")),
                             "result" to (payload["content"] ?: JsonPrimitive("")),
@@ -220,22 +270,43 @@ class HarnessClient(
                         GatewayEvent(
                             "message.complete",
                             sessionId,
-                            mapOf(
+                            values(
                                 "text" to JsonPrimitive(content.assistantText()),
-                                "message_id" to (event["id"] ?: JsonPrimitive("assistant")),
+                                "message_id" to (eventRecord["id"] ?: JsonPrimitive("assistant")),
                             ),
                         )
                     )
                 }
             }
-            "llm.run.failed" -> return payload.string("error") ?: "Harness LLM run failed"
+            "chat.message.user.created" ->
+                eventChannel.send(
+                    GatewayEvent(
+                        "message.user",
+                        sessionId,
+                        values(
+                            "text" to (payload["content"] ?: JsonPrimitive("")),
+                            "message_id" to (eventRecord["id"] ?: JsonPrimitive("user")),
+                        ),
+                    )
+                )
+            "llm.run.failed" -> {
+                eventChannel.send(
+                    GatewayEvent(
+                        "error",
+                        sessionId,
+                        values(
+                            "message" to
+                                JsonPrimitive(payload.string("error") ?: "Harness LLM run failed")
+                        ),
+                    )
+                )
+                eventChannel.send(GatewayEvent("session.inactive", sessionId, emptyMap()))
+            }
         }
         return null
     }
 
-    suspend fun interrupt() {
-        activeCall?.cancel()
-    }
+    suspend fun interrupt() = Unit
 
     suspend fun approve(choice: String): Unit =
         throw UnsupportedOperationException("Harness does not expose approval responses")
@@ -305,13 +376,14 @@ class HarnessClient(
     override fun close() {
         if (!closed) {
             closed = true
-            activeCall?.cancel()
+            stopWatching()
             eventChannel.close()
             client.connectionPool.evictAll()
         }
     }
 
     private companion object {
+        const val RECONNECT_DELAY_MS = 1_000L
         val JSON_MEDIA_TYPE = "application/json".toMediaType()
         val MODEL_OPTIONS =
             mapOf(

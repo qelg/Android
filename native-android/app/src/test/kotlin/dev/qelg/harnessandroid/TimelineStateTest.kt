@@ -287,6 +287,37 @@ class TimelineStateTest {
     }
 
     @Test
+    fun historyRowTreatsCreatedAtMsAsMilliseconds() {
+        val row =
+            Json.parseToJsonElement(
+                    """{"id":12,"role":"assistant","content":"Hi","created_at_ms":1752757200123}"""
+                )
+                .jsonObject
+        val message = messagesFromHistoryRow(row).single() as ChatItem.Message
+        assertEquals(Instant.ofEpochMilli(1752757200123), message.timestamp)
+    }
+
+    @Test
+    fun genericNumericTimestampAcceptsNanoseconds() {
+        val timestamp =
+            mapOf<String, kotlinx.serialization.json.JsonElement>(
+                    "timestamp" to JsonPrimitive(1752757200123000000L)
+                )
+                .instant()
+        assertEquals(Instant.ofEpochMilli(1752757200123), timestamp)
+    }
+
+    @Test
+    fun latestEventIdUsesPersistedHistoryIds() {
+        val rows =
+            listOf(
+                Json.parseToJsonElement("""{"id":4}""").jsonObject,
+                Json.parseToJsonElement("""{"id":9}""").jsonObject,
+            )
+        assertEquals(9L, rows.latestEventId())
+    }
+
+    @Test
     fun clarifyRequestParseQuestionAndChoices() {
         val payload =
             mapOf(

@@ -222,11 +222,13 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     fun hideTree() = _state.update { it.copy(treeParentId = null) }
 
     fun dismissChat() {
+        client?.stopWatching()
         runtimeId = null
         _state.update { it.copy(selectedId = null, treeParentId = null) }
     }
 
     fun backFromChat() {
+        client?.stopWatching()
         runtimeId = null
         _state.update {
             if (it.treeParentId != null) it.copy(selectedId = null)
@@ -445,6 +447,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                             sessions = listOf(session) + it.sessions,
                         )
                     }
+                    api.watchSession(stored)
                 }
                 .onFailure { error ->
                     _state.update { it.copy(connecting = false) }
@@ -496,7 +499,8 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                                 )
                         val baseline = state.value.items
                         val historyVersion = ++historyRequestVersion
-                        val history = messagesFromHistoryRows(api.history(session.id))
+                        val historyRows = api.history(session.id)
+                        val history = messagesFromHistoryRows(historyRows)
                         if (
                             selectionVersion != version ||
                                 historyRequestVersion != historyVersion ||
@@ -512,6 +516,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                                 modelCatalog = it.modelCatalog.selectedFor(selectedModel),
                             )
                         }
+                        api.watchSession(session.id, historyRows.latestEventId())
                         refreshTokenUsage()
                     }
                     .onFailure { if (selectionVersion == version && client === api) showError(it) }
@@ -577,6 +582,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 clarify = null,
             )
         }
+        if (stored != null) client?.watchSession(stored)
     }
 
     fun interrupt() =
@@ -781,6 +787,10 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                     else current
                 }
             }
+            "message.user" -> {
+                reloadHistory()
+                scheduleRefresh()
+            }
             "message.delta" ->
                 appendDelta(event.payload["text"]?.jsonPrimitive?.contentOrNull.orEmpty())
             "message.complete" -> {
@@ -920,13 +930,15 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                     state.value.sessions.firstOrNull { it.id == id }?.let(::select)
                 }
             }
-            "error" ->
+            "error" -> {
+                _state.update { it.copy(active = false, approval = null, clarify = null) }
                 showError(
                     IllegalStateException(
                         event.payload["message"]?.jsonPrimitive?.contentOrNull
                             ?: "Unknown Harness error"
                     )
                 )
+            }
         }
     }
 
@@ -1279,18 +1291,26 @@ private fun cancelRunningTools(items: List<ChatItem>, completedAt: Instant): Lis
         }
     }
 
-private fun Map<String, JsonElement>.instant(): Instant? =
+internal fun Map<String, JsonElement>.instant(): Instant? =
     listOf("timestamp", "created_at", "created_at_ms", "updated_at", "time").firstNotNullOfOrNull {
         key ->
-        this[key]?.jsonPrimitive?.let { prim ->
-            prim.contentOrNull?.let { runCatching { Instant.parse(it) }.getOrNull() }
-                ?: prim.doubleOrNull?.let { Instant.ofEpochMilli((it * 1000).toLong()) }
-                ?: prim.longOrNull?.let {
-                    if (it > 1_000_000_000_000L) Instant.ofEpochMilli(it)
-                    else Instant.ofEpochSecond(it)
-                }
-        }
+        val primitive = this[key] as? JsonPrimitive ?: return@firstNotNullOfOrNull null
+        primitive.contentOrNull?.let { runCatching { Instant.parse(it) }.getOrNull() }
+            ?: primitive.doubleOrNull?.let { value ->
+                val epochMillis =
+                    when {
+                        key.endsWith("_ms") -> value
+                        kotlin.math.abs(value) >= 100_000_000_000_000_000.0 -> value / 1_000_000.0
+                        kotlin.math.abs(value) >= 100_000_000_000_000.0 -> value / 1_000.0
+                        kotlin.math.abs(value) >= 100_000_000_000.0 -> value
+                        else -> value * 1_000.0
+                    }
+                Instant.ofEpochMilli(epochMillis.toLong())
+            }
     }
+
+internal fun List<JsonObject>.latestEventId(): Long? =
+    maxOfOrNull { row -> row["id"]?.jsonPrimitive?.longOrNull ?: 0L }?.takeIf { it > 0L }
 
 private fun JsonObject.instant(): Instant? = (this as Map<String, JsonElement>).instant()
 
