@@ -54,11 +54,19 @@ class HarnessClient(
                     else null,
                 providers =
                     providers.map { provider ->
-                        val model =
-                            if (provider == selectedProvider && !selectedModel.isNullOrBlank())
-                                selectedModel
-                            else DEFAULT_MODELS[provider] ?: provider
-                        ModelProvider(provider, provider, listOf(ModelOption(model)))
+                        val models =
+                            buildList {
+                                    addAll(MODEL_OPTIONS[provider].orEmpty())
+                                    if (
+                                        provider == selectedProvider &&
+                                            !selectedModel.isNullOrBlank()
+                                    )
+                                        add(selectedModel)
+                                    if (isEmpty()) add(provider)
+                                }
+                                .distinct()
+                                .map(::ModelOption)
+                        ModelProvider(provider, provider, models)
                     },
             )
         return if (catalog.selected != null) catalog else catalog.selectedFor(null)
@@ -98,7 +106,7 @@ class HarnessClient(
         val id = session.string("id") ?: error("Harness returned no session ID")
         model?.takeIf(String::isNotBlank)?.let {
             val provider =
-                DEFAULT_MODELS.entries.firstOrNull { entry -> entry.value == it }?.key ?: "mock-llm"
+                MODEL_OPTIONS.entries.firstOrNull { entry -> it in entry.value }?.key ?: "mock-llm"
             selectModel(id, ModelSelection(provider, it))
         }
         return session
@@ -205,17 +213,21 @@ class HarnessClient(
                         ),
                     )
                 )
-            "chat.message.assistant.created" ->
-                eventChannel.send(
-                    GatewayEvent(
-                        "message.complete",
-                        sessionId,
-                        mapOf(
-                            "text" to (payload["content"] ?: JsonPrimitive("")),
-                            "message_id" to (event["id"] ?: JsonPrimitive("assistant")),
-                        ),
+            "chat.message.assistant.created" -> {
+                val content = payload["content"]
+                if (!content.hasFunctionCall()) {
+                    eventChannel.send(
+                        GatewayEvent(
+                            "message.complete",
+                            sessionId,
+                            mapOf(
+                                "text" to JsonPrimitive(content.assistantText()),
+                                "message_id" to (event["id"] ?: JsonPrimitive("assistant")),
+                            ),
+                        )
                     )
-                )
+                }
+            }
             "llm.run.failed" -> return payload.string("error") ?: "Harness LLM run failed"
         }
         return null
@@ -301,14 +313,47 @@ class HarnessClient(
 
     private companion object {
         val JSON_MEDIA_TYPE = "application/json".toMediaType()
-        val DEFAULT_MODELS =
+        val MODEL_OPTIONS =
             mapOf(
-                "mock-llm" to "test-model",
-                "openai-codex" to "gpt-5.3-codex",
-                "chatgpt-codex" to "gpt-5.3-codex",
-                "openrouter" to "openai/gpt-4o-mini",
+                "mock-llm" to listOf("test-model"),
+                "openai-codex" to listOf("gpt-5.6-sol", "terra", "luna"),
+                "chatgpt-codex" to listOf("gpt-5.6-sol", "terra", "luna"),
+                "openrouter" to listOf("openai/gpt-4o-mini"),
             )
     }
 }
+
+internal fun JsonElement?.assistantText(): String =
+    when (this) {
+        null,
+        JsonNull -> ""
+        is JsonPrimitive -> contentOrNull.orEmpty()
+        is JsonArray -> map { it.assistantText() }.filter(String::isNotBlank).joinToString("\n")
+        is JsonObject -> {
+            when (string("type")) {
+                "function_call" -> ""
+                "message" -> this["content"].assistantText()
+                "output_text",
+                "text" -> this["text"].assistantText()
+                else ->
+                    listOf("text", "content", "output")
+                        .firstNotNullOfOrNull { key ->
+                            this[key]?.assistantText()?.takeIf(String::isNotBlank)
+                        }
+                        .orEmpty()
+            }
+        }
+    }
+
+internal fun JsonElement?.hasFunctionCall(): Boolean =
+    when (this) {
+        is JsonArray -> any { it.hasFunctionCall() }
+        is JsonObject ->
+            string("type") == "function_call" ||
+                (this["tool_calls"] as? JsonArray)?.isNotEmpty() == true ||
+                this["content"].hasFunctionCall() ||
+                this["output"].hasFunctionCall()
+        else -> false
+    }
 
 private fun String.urlEncode() = java.net.URLEncoder.encode(this, Charsets.UTF_8.name())

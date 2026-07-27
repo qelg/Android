@@ -3,6 +3,8 @@ package dev.qelg.harnessandroid
 import dev.qelg.harnessandroid.data.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.mockwebserver.*
 import org.junit.Assert.*
 import org.junit.Test
@@ -52,6 +54,63 @@ class HarnessClientTest {
             assertEquals(
                 listOf("message.delta", "message.complete", "session.inactive"),
                 got.await().map { it.type },
+            )
+        }
+    }
+
+    @Test
+    fun chatGptCodexOffersSupportedModels() = runBlocking {
+        server(
+            MockResponse().setBody("""{"providers":["chatgpt-codex"]}"""),
+            MockResponse()
+                .setBody("""{"provider":"chatgpt-codex","model":"terra","scope":"session"}"""),
+        ) { client, _ ->
+            val catalog = client.modelOptions("sess_1")
+            assertEquals(
+                listOf("gpt-5.6-sol", "terra", "luna"),
+                catalog.providers.single().models.map { it.id },
+            )
+            assertEquals(ModelSelection("chatgpt-codex", "terra"), catalog.selected)
+        }
+    }
+
+    @Test
+    fun streamsStructuredCodexAnswerAndToolDetails() = runBlocking {
+        val body =
+            listOf(
+                    "event: chat.message.assistant.created",
+                    "data: {\"id\":2,\"payload\":{\"content\":[{\"type\":\"function_call\",\"name\":\"podman-shell\",\"arguments\":\"{\\\"cmd\\\":\\\"pwd\\\"}\"}]}}",
+                    "",
+                    "event: tool.call.requested",
+                    "data: {\"id\":3,\"payload\":{\"tool\":\"podman-shell\",\"run_id\":\"call_1\",\"input\":{\"cmd\":\"pwd\"}}}",
+                    "",
+                    "event: chat.message.tool.created",
+                    "data: {\"id\":4,\"payload\":{\"tool\":\"podman-shell\",\"run_id\":\"call_1\",\"content\":\"/work\"}}",
+                    "",
+                    "event: chat.message.assistant.created",
+                    "data: {\"id\":5,\"payload\":{\"content\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"The directory is /work.\"}]}]}}",
+                    "",
+                    "",
+                )
+                .joinToString("\n")
+        server(MockResponse().setHeader("Content-Type", "text/event-stream").setBody(body)) {
+            client,
+            _ ->
+            val collected = async { client.events.take(4).toList() }
+            client.submit("sess_1", "where am I?")
+            val events = collected.await()
+            assertEquals(
+                listOf("tool.start", "tool.complete", "message.complete", "session.inactive"),
+                events.map { it.type },
+            )
+            assertEquals("podman-shell", events[0].payload["name"]?.jsonPrimitive?.content)
+            assertEquals(
+                "pwd",
+                events[0].payload["arguments"]?.jsonObject?.get("cmd")?.jsonPrimitive?.content,
+            )
+            assertEquals(
+                "The directory is /work.",
+                events[2].payload["text"]?.jsonPrimitive?.content,
             )
         }
     }

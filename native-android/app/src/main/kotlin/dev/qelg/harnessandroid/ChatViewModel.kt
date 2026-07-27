@@ -982,12 +982,25 @@ class ChatViewModel(application: Application, private val savedState: SavedState
 
 internal fun messagesFromHistoryRow(row: JsonObject): List<ChatItem> {
     val role = row.string("role") ?: "assistant"
+    val eventName = row.string("event_name")
     val timestamp = row.instant()
+    if (role == "tool_request" || eventName == "tool.call.requested")
+        return listOf(
+            ChatItem.Tool(
+                id = row.string("run_id") ?: row.string("tool_call_id"),
+                name =
+                    row.string("tool") ?: row.string("tool_name") ?: row.string("name") ?: "tool",
+                state = "running",
+                arguments = (row["content"] ?: row["input"])?.displayString(),
+                startedAt = timestamp,
+            )
+        )
     if (role == "tool")
         return listOf(
             ChatItem.Tool(
-                id = row.string("tool_call_id"),
-                name = row.string("tool_name") ?: row.string("name") ?: "tool",
+                id = row.string("run_id") ?: row.string("tool_call_id"),
+                name =
+                    row.string("tool") ?: row.string("tool_name") ?: row.string("name") ?: "tool",
                 state = row.string("state") ?: "completed",
                 result = (row["content"] ?: row["text"])?.displayString().orEmpty(),
                 error = row["error"]?.displayString(),
@@ -997,13 +1010,7 @@ internal fun messagesFromHistoryRow(row: JsonObject): List<ChatItem> {
             )
         )
     val raw = row["content"] ?: row["text"]
-    val text =
-        when (raw) {
-            is JsonPrimitive -> raw.contentOrNull.orEmpty()
-            is JsonArray ->
-                raw.mapNotNull { (it as? JsonObject)?.string("text") }.joinToString("\n")
-            else -> ""
-        }
+    val text = raw.assistantText()
     val result = mutableListOf<ChatItem>()
     if (text.isNotBlank())
         result += ChatItem.Message(role, text, row.string("id"), timestamp = timestamp)
