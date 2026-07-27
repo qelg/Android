@@ -313,8 +313,12 @@ class HarnessClient(
 
     fun reconnectNow() = Unit
 
+    suspend fun usageSnapshot(sessionId: String): HarnessUsageSnapshot =
+        harnessUsageSnapshot(history(sessionId))
+
     suspend fun contextBreakdown(runtimeSessionId: String): ContextBreakdown =
-        throw UnsupportedOperationException("Harness does not expose context breakdowns")
+        usageSnapshot(runtimeSessionId).context
+            ?: throw UnsupportedOperationException("No provider usage has been recorded yet")
 
     suspend fun toolDefinitions(runtimeSessionId: String): ToolDefinitions {
         val tools =
@@ -334,14 +338,15 @@ class HarnessClient(
 
     suspend fun latestSession(sessionId: String) = buildJsonObject { put("id", sessionId) }
 
-    private fun zeroUsage() = CumulativeTokenUsage.fromJson(JsonObject(emptyMap()))
+    suspend fun sessionTokenUsage(storedSessionId: String): CumulativeTokenUsage =
+        usageSnapshot(storedSessionId).cumulative
+            ?: CumulativeTokenUsage.fromJson(JsonObject(emptyMap()))
 
-    suspend fun sessionTokenUsage(storedSessionId: String) = zeroUsage()
+    suspend fun conversationTokenUsage(storedSessionId: String): CumulativeTokenUsage =
+        sessionTokenUsage(storedSessionId)
 
-    suspend fun conversationTokenUsage(storedSessionId: String) = zeroUsage()
-
-    suspend fun conversationTokenDetails(storedSessionId: String) =
-        ConversationTokenDetails(zeroUsage(), null)
+    suspend fun conversationTokenDetails(storedSessionId: String): ConversationTokenDetails =
+        ConversationTokenDetails(sessionTokenUsage(storedSessionId), null)
 
     suspend fun transcribe(bytes: ByteArray, mimeType: String): String =
         throw UnsupportedOperationException("Harness does not expose voice transcription")

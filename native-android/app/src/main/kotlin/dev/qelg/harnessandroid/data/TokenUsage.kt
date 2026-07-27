@@ -1,12 +1,7 @@
 package dev.qelg.harnessandroid.data
 
 import kotlin.math.roundToInt
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
+import kotlinx.serialization.json.*
 
 private fun JsonObject.long(key: String): Long = this[key]?.jsonPrimitive?.longOrNull ?: 0L
 
@@ -124,7 +119,86 @@ data class CumulativeTokenUsage(
                     value.containsKey("cache_read_tokens") ||
                         value.containsKey("cache_write_tokens"),
             )
+
+        fun fromProviderUsage(value: JsonObject): CumulativeTokenUsage {
+            val inputDetails =
+                (value["input_tokens_details"] as? JsonObject)
+                    ?: (value["prompt_tokens_details"] as? JsonObject)
+                    ?: JsonObject(emptyMap())
+            val outputDetails =
+                (value["output_tokens_details"] as? JsonObject)
+                    ?: (value["completion_tokens_details"] as? JsonObject)
+                    ?: JsonObject(emptyMap())
+            val processedInput =
+                value.long("input_tokens").takeIf { it > 0L } ?: value.long("prompt_tokens")
+            val output =
+                value.long("output_tokens").takeIf { it > 0L } ?: value.long("completion_tokens")
+            val cacheRead =
+                inputDetails.long("cached_tokens").takeIf { it > 0L }
+                    ?: inputDetails.long("cache_read_tokens")
+            val cacheWrite = inputDetails.long("cache_write_tokens")
+            return CumulativeTokenUsage(
+                inputTokens = (processedInput - cacheRead - cacheWrite).coerceAtLeast(0L),
+                outputTokens = output,
+                cacheReadTokens = cacheRead,
+                cacheWriteTokens = cacheWrite,
+                reasoningTokens = outputDetails.long("reasoning_tokens"),
+                apiCalls = 1,
+                cacheMetricsReported =
+                    inputDetails.containsKey("cached_tokens") ||
+                        inputDetails.containsKey("cache_read_tokens") ||
+                        inputDetails.containsKey("cache_write_tokens"),
+            )
+        }
     }
+}
+
+data class HarnessUsageSnapshot(
+    val context: ContextBreakdown?,
+    val cumulative: CumulativeTokenUsage?,
+)
+
+fun providerUsageFromMessage(message: JsonObject): CumulativeTokenUsage? {
+    val metadata = message["metadata"] as? JsonObject
+    val providerResponse = metadata?.get("provider_response") as? JsonObject
+    val usage =
+        (providerResponse?.get("usage") as? JsonObject)
+            ?: (metadata?.get("usage") as? JsonObject)
+            ?: (message["usage"] as? JsonObject)
+            ?: return null
+    return CumulativeTokenUsage.fromProviderUsage(usage)
+}
+
+fun harnessUsageSnapshot(messages: List<JsonObject>): HarnessUsageSnapshot {
+    val calls =
+        messages.mapNotNull { message ->
+            providerUsageFromMessage(message)?.let { usage -> message to usage }
+        }
+    val cumulative = calls.map { it.second }.reduceOrNull { total, usage -> total + usage }
+    val latest = calls.lastOrNull()
+    val context =
+        latest?.let { (message, usage) ->
+            ContextBreakdown(
+                categories =
+                    buildList {
+                        if (usage.processedInputTokens > 0L)
+                            add(
+                                ContextCategory(
+                                    "input",
+                                    "Prompt processed",
+                                    usage.processedInputTokens,
+                                )
+                            )
+                        if (usage.outputTokens > 0L)
+                            add(ContextCategory("output", "Model output", usage.outputTokens))
+                    },
+                contextUsed = usage.totalTokens,
+                contextMax = 0L,
+                estimatedTotal = usage.totalTokens,
+                model = message["model"]?.jsonPrimitive?.contentOrNull,
+            )
+        }
+    return HarnessUsageSnapshot(context, cumulative)
 }
 
 data class ConversationTokenDetails(val usage: CumulativeTokenUsage, val systemPrompt: String?)
@@ -209,7 +283,7 @@ data class TokenUsageState(
                     )
                 }
             return context
-                ?.takeIf { it.contextMax > 0L }
+                ?.takeIf { it.contextUsed > 0L }
                 ?.let { ContextWindow(it.contextUsed, it.contextMax, it.usedPercent) }
         }
 }
