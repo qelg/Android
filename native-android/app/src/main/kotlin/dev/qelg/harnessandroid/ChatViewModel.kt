@@ -671,9 +671,8 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         usageJob?.cancel()
         usageJob =
             viewModelScope.launch {
-                val context = runCatching { api.contextBreakdown(runtime) }.getOrNull()
+                val snapshot = runCatching { api.usageSnapshot(runtime) }.getOrNull()
                 val toolDefinitions = runCatching { api.toolDefinitions(runtime) }.getOrNull()
-                val details = runCatching { api.conversationTokenDetails(stored) }.getOrNull()
                 val currentIdentity =
                     TokenUsageRefreshIdentity(
                         connectionVersion,
@@ -689,11 +688,8 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                     it.copy(
                         tokenUsage =
                             current.copy(
-                                context = context ?: current.context,
-                                cumulative = details?.usage ?: current.cumulative,
-                                systemPrompt =
-                                    if (details != null) details.systemPrompt
-                                    else current.systemPrompt,
+                                context = snapshot?.context ?: current.context,
+                                cumulative = snapshot?.cumulative ?: current.cumulative,
                                 toolDefinitions = toolDefinitions ?: current.toolDefinitions,
                             )
                     )

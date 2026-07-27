@@ -734,6 +734,23 @@ private fun ContextUsageBar(usage: TokenUsageState, onClick: () -> Unit) {
     }
     val used = window.used
     val max = window.max
+    if (max <= 0L) {
+        Surface(onClick = onClick, color = MaterialTheme.colorScheme.surfaceContainerLow) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Current context", style = MaterialTheme.typography.labelMedium)
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "${formatTokenCount(used)} tokens",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        return
+    }
     val estimatedBase = context?.baseTokens ?: 0L
     val estimatedConversation = context?.conversationTokens ?: 0L
     val estimatedUsed = estimatedBase + estimatedConversation
@@ -822,7 +839,9 @@ private fun TokenUsageBottomSheet(
                 val percent = window.percent
                 Text("Current context", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "${formatTokenCount(used)} / ${formatTokenCount(max)} tokens · $percent%",
+                    if (max > 0L)
+                        "${formatTokenCount(used)} / ${formatTokenCount(max)} tokens · $percent%"
+                    else "${formatTokenCount(used)} tokens · context limit unavailable",
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 if (context?.categories.isNullOrEmpty()) {
@@ -843,7 +862,7 @@ private fun TokenUsageBottomSheet(
                         UsageDetailRow(
                             category.label,
                             category.tokens,
-                            category.tokens.percentOf(max),
+                            category.tokens.percentOf(if (max > 0L) max else used),
                             onClick = page?.let { selected -> { onOpenDetail(selected) } },
                             onClickLabel =
                                 when (page) {
@@ -854,11 +873,13 @@ private fun TokenUsageBottomSheet(
                         )
                     }
                 }
-                UsageDetailRow(
-                    "Free",
-                    (max - used).coerceAtLeast(0L),
-                    (max - used).coerceAtLeast(0L).percentOf(max),
-                )
+                if (max > 0L) {
+                    UsageDetailRow(
+                        "Free",
+                        (max - used).coerceAtLeast(0L),
+                        (max - used).coerceAtLeast(0L).percentOf(max),
+                    )
+                }
                 Text(
                     "Category values are approximate.",
                     style = MaterialTheme.typography.bodySmall,

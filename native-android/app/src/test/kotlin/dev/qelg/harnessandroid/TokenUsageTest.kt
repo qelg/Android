@@ -202,6 +202,65 @@ class TokenUsageTest {
     }
 
     @Test
+    fun parsesResponsesApiUsageWithoutDoubleCountingCachedInput() {
+        val message =
+            Json.parseToJsonElement(
+                    """{"role":"assistant","model":"gpt-5.6-sol","metadata":{"provider_response":{"usage":{"input_tokens":96368,"input_tokens_details":{"cache_write_tokens":0,"cached_tokens":92672},"output_tokens":326,"output_tokens_details":{"reasoning_tokens":231},"total_tokens":96694}}}}"""
+                )
+                .jsonObject
+
+        val usage = dev.qelg.harnessandroid.data.providerUsageFromMessage(message)!!
+
+        assertEquals(3696L, usage.inputTokens)
+        assertEquals(92672L, usage.cacheReadTokens)
+        assertEquals(0L, usage.cacheWriteTokens)
+        assertEquals(326L, usage.outputTokens)
+        assertEquals(231L, usage.reasoningTokens)
+        assertEquals(96694L, usage.totalTokens)
+        assertEquals(96, usage.cacheHitPercent)
+        assertEquals(1, usage.apiCalls)
+    }
+
+    @Test
+    fun snapshotUsesLastCallForContextAndSumsEveryModelCall() {
+        val first =
+            Json.parseToJsonElement(
+                    """{"role":"assistant","model":"terra","metadata":{"provider_response":{"usage":{"input_tokens":96368,"input_tokens_details":{"cached_tokens":92672},"output_tokens":326,"output_tokens_details":{"reasoning_tokens":231}}}}}"""
+                )
+                .jsonObject
+        val second =
+            Json.parseToJsonElement(
+                    """{"role":"assistant","model":"luna","metadata":{"provider_response":{"usage":{"input_tokens":1000,"input_tokens_details":{"cached_tokens":800,"cache_write_tokens":50},"output_tokens":80,"output_tokens_details":{"reasoning_tokens":20}}}}}"""
+                )
+                .jsonObject
+
+        val snapshot = dev.qelg.harnessandroid.data.harnessUsageSnapshot(listOf(first, second))
+        val cumulative = snapshot.cumulative!!
+
+        assertEquals(97774L, cumulative.totalTokens)
+        assertEquals(2, cumulative.apiCalls)
+        assertEquals(93472L, cumulative.cacheReadTokens)
+        assertEquals(50L, cumulative.cacheWriteTokens)
+        assertEquals(251L, cumulative.reasoningTokens)
+        assertEquals(1080L, snapshot.context!!.contextUsed)
+        assertEquals(0L, snapshot.context!!.contextMax)
+        assertEquals("luna", snapshot.context!!.model)
+        assertEquals(listOf(1000L, 80L), snapshot.context!!.categories.map { it.tokens })
+    }
+
+    @Test
+    fun unknownContextLimitStillProducesCurrentContextWindow() {
+        val state =
+            TokenUsageState(
+                context = ContextBreakdown(emptyList(), 96694L, 0L, 96694L, "gpt-5.6-sol")
+            )
+
+        assertEquals(96694L, state.currentContext!!.used)
+        assertEquals(0L, state.currentContext!!.max)
+        assertEquals(0, state.currentContext!!.percent)
+    }
+
+    @Test
     fun delayedUsageResponseIsRejectedAfterAnySessionBoundaryChanges() {
         val expected =
             TokenUsageRefreshIdentity(
