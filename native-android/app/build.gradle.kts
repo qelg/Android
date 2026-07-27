@@ -31,11 +31,11 @@ val resolvedVersionCode: Int = (project.findProperty("versionCode") as? String)?
 val resolvedVersionName: String = project.findProperty("versionName") as? String ?: "0.1.0-dev"
 
 android {
-    namespace = "dev.qelg.hermeschat"
+    namespace = "dev.qelg.harnessandroid"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "dev.qelg.hermes_chat.native"
+        applicationId = "dev.qelg.harness.android"
         minSdk = 26
         targetSdk = 35
         versionCode = resolvedVersionCode

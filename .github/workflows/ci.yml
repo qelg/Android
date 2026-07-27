@@ -44,7 +44,7 @@ jobs:
       - run: ./native-android/gradlew -p native-android -PversionCode="$VERSION_CODE" -PversionName="$VERSION_NAME" spotlessCheck lintDebug testDebugUnitTest assembleDebug assembleDebugAndroidTest
       - uses: actions/upload-artifact@v4
         with:
-          name: hermes-chat-native-preview
+          name: harness-android-preview
           path: native-android/app/build/outputs/apk/debug/app-debug.apk
 
   native-android-release:
@@ -96,11 +96,11 @@ jobs:
             > native-android/key.properties
       - run: ./native-android/gradlew -p native-android -PversionCode="$VERSION_CODE" -PversionName="$VERSION_NAME" assembleRelease
       - name: Prepare stable APK filename
-        run: cp native-android/app/build/outputs/apk/release/app-release.apk hermes-chat-latest.apk
+        run: cp native-android/app/build/outputs/apk/release/app-release.apk harness-android-latest.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: hermes-chat-android
-          path: hermes-chat-latest.apk
+          name: harness-android
+          path: harness-android-latest.apk
 
   publish-android:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -114,10 +114,10 @@ jobs:
           fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
-          name: hermes-chat-android
+          name: harness-android
       - uses: actions/download-artifact@v4
         with:
-          name: hermes-chat-native-preview
+          name: harness-android-preview
           path: native-preview
       - name: Compute version for release notes
         run: |
@@ -139,26 +139,26 @@ jobs:
           echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
           echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
       - name: Prepare native preview APK
-        run: cp native-preview/app-debug.apk hermes-chat-native-preview.apk
+        run: cp native-preview/app-debug.apk harness-android-preview.apk
       - name: Publish latest APKs at the stable download URL
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           notes="Automated signed Android build ${VERSION_NAME} (versionCode ${VERSION_CODE}) from commit ${GITHUB_SHA}."
           if gh release view latest --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload latest hermes-chat-latest.apk hermes-chat-native-preview.apk \
+            gh release upload latest harness-android-latest.apk harness-android-preview.apk \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
             gh release edit latest \
               --repo "$GITHUB_REPOSITORY" \
-              --title "Latest Hermes Chat APK" \
+              --title "Latest Harness Android APK" \
               --notes "$notes" \
               --latest
           else
-            gh release create latest hermes-chat-latest.apk hermes-chat-native-preview.apk \
+            gh release create latest harness-android-latest.apk harness-android-preview.apk \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "Latest Hermes Chat APK" \
+              --title "Latest Harness Android APK" \
               --notes "$notes" \
               --latest
           fi

@@ -12,5 +12,5 @@ dependencyResolutionManagement {
         mavenCentral()
     }
 }
-rootProject.name = "HermesChatNative"
+rootProject.name = "HarnessAndroid"
 include(":app")

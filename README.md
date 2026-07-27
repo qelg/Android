@@ -1,10 +1,10 @@
-# Hermes Chat
+# Harness Android
 
-A native Kotlin/Jetpack Compose Android client for Hermes Agent.
+A native Kotlin/Jetpack Compose Android client. The backend migration from Hermes Agent to qelg/harness is tracked in the follow-up change.
 
 ## Download
 
-**[Download the newest signed Android APK](https://github.com/qelg/hermes-chat/releases/download/latest/hermes-chat-latest.apk)**
+**[Download the newest signed Android APK](https://github.com/qelg/Android/releases/download/latest/harness-android-latest.apk)**
 
 This stable link is updated automatically after every successful CI build on `main`.
 
