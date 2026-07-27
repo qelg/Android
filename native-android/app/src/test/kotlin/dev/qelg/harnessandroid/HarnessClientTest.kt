@@ -44,17 +44,40 @@ class HarnessClientTest {
     }
 
     @Test
-    fun streamsDeltasAndCompletion() = runBlocking {
+    fun submitsMessageWithoutWaitingForTheLlmRun() = runBlocking {
+        server(MockResponse().setBody("""{"id":1,"role":"user","content":"hello"}""")) {
+            client,
+            server ->
+            client.submit("sess_1", "hello")
+            val request = server.takeRequest()
+            assertEquals("/sessions/sess_1/messages", request.path)
+            assertTrue(request.body.readUtf8().contains("hello"))
+        }
+    }
+
+    @Test
+    fun watchesSessionDeltasAndCompletionFromLastHistoryEvent() = runBlocking {
         val body =
-            "event: llm.delta\ndata: {\"payload\":{\"delta\":\"Hi\"}}\n\nevent: chat.message.assistant.created\ndata: {\"id\":3,\"payload\":{\"content\":\"Hi\"}}\n\n"
-        server(MockResponse().setHeader("Content-Type", "text/event-stream").setBody(body)) { c, _
-            ->
-            val got = async { c.events.take(3).toList() }
-            c.submit("sess_1", "hello")
+            """id: 3
+                |event: llm.delta
+                |data: {"event":{"id":3,"name":"llm.delta","payload":{"delta":"Hi"},"created_at_ms":1752757200123}}
+                |
+                |id: 4
+                |event: chat.message.assistant.created
+                |data: {"event":{"id":4,"name":"chat.message.assistant.created","payload":{"content":"Hi"},"created_at_ms":1752757201123}}
+                |
+                |"""
+                .trimMargin()
+        server(MockResponse().setHeader("Content-Type", "text/event-stream").setBody(body)) {
+            client,
+            server ->
+            val got = async { client.events.take(2).toList() }
+            client.watchSession("sess_1", 2)
             assertEquals(
-                listOf("message.delta", "message.complete", "session.inactive"),
-                got.await().map { it.type },
+                listOf("message.delta", "message.complete"),
+                withTimeout(5_000) { got.await() }.map { it.type },
             )
+            assertEquals("/sessions/sess_1/messages/updates?since_id=2", server.takeRequest().path)
         }
     }
 
@@ -96,11 +119,11 @@ class HarnessClientTest {
         server(MockResponse().setHeader("Content-Type", "text/event-stream").setBody(body)) {
             client,
             _ ->
-            val collected = async { client.events.take(4).toList() }
-            client.submit("sess_1", "where am I?")
-            val events = collected.await()
+            val collected = async { client.events.take(3).toList() }
+            client.watchSession("sess_1")
+            val events = withTimeout(5_000) { collected.await() }
             assertEquals(
-                listOf("tool.start", "tool.complete", "message.complete", "session.inactive"),
+                listOf("tool.start", "tool.complete", "message.complete"),
                 events.map { it.type },
             )
             assertEquals("podman-shell", events[0].payload["name"]?.jsonPrimitive?.content)
