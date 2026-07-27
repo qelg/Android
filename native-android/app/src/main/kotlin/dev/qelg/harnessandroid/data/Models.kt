@@ -8,7 +8,7 @@ import kotlinx.serialization.json.*
 
 @JvmInline value class SessionId(val value: String)
 
-data class HermesSession(
+data class HarnessSession(
     val id: String,
     val title: String,
     val updatedAt: String? = null,
@@ -30,9 +30,9 @@ data class HermesSession(
     val cumulativeTokenUsage: CumulativeTokenUsage? = null,
 ) {
     companion object {
-        fun fromJson(value: JsonObject): HermesSession {
+        fun fromJson(value: JsonObject): HarnessSession {
             val id = value.string("id") ?: value.string("session_id") ?: ""
-            return HermesSession(
+            return HarnessSession(
                 id = id,
                 title = value.string("title")?.takeIf(String::isNotBlank) ?: "Untitled session",
                 updatedAt =
@@ -40,7 +40,10 @@ data class HermesSession(
                         ?: value.string("last_active")
                         ?: value.string("last_active_at")
                         ?: value.string("started_at")
-                        ?: value.string("created_at"),
+                        ?: value.string("created_at")
+                        ?: value["created_at_ms"]?.jsonPrimitive?.longOrNull?.let {
+                            java.time.Instant.ofEpochMilli(it).toString()
+                        },
                 source = value.string("source"),
                 preview = value.string("preview"),
                 active =
@@ -69,13 +72,13 @@ data class HermesSession(
     }
 }
 
-fun modelCatalogForSession(catalog: ModelCatalog, session: HermesSession): ModelCatalog =
+fun modelCatalogForSession(catalog: ModelCatalog, session: HarnessSession): ModelCatalog =
     catalog.selectedFor(session.model)
 
 fun sessionModelForLineage(
     storedSessionId: String,
     runtimeSessionId: String?,
-    sessions: List<HermesSession>,
+    sessions: List<HarnessSession>,
     overrides: Map<String, String>,
 ): String? =
     overrides[storedSessionId]
@@ -83,21 +86,21 @@ fun sessionModelForLineage(
         ?: sessions.firstOrNull { it.id == storedSessionId }?.model
 
 fun applySessionModelOverrides(
-    sessions: List<HermesSession>,
+    sessions: List<HarnessSession>,
     overrides: Map<String, String>,
-): List<HermesSession> =
+): List<HarnessSession> =
     sessions.map { session -> overrides[session.id]?.let { session.copy(model = it) } ?: session }
 
 fun sessionsWithModelSelection(
-    sessions: List<HermesSession>,
+    sessions: List<HarnessSession>,
     selectedId: String,
     selection: ModelSelection,
-): List<HermesSession> =
+): List<HarnessSession> =
     sessions.map { session ->
         if (session.id == selectedId) session.copy(model = selection.model) else session
     }
 
-fun filterSessions(sessions: List<HermesSession>, query: String): List<HermesSession> {
+fun filterSessions(sessions: List<HarnessSession>, query: String): List<HarnessSession> {
     val needle = query.trim().lowercase()
     if (needle.isEmpty()) return sessions
     return sessions.filter {
@@ -108,7 +111,7 @@ fun filterSessions(sessions: List<HermesSession>, query: String): List<HermesSes
     }
 }
 
-fun sortSessionsForOverview(sessions: List<HermesSession>): List<HermesSession> =
+fun sortSessionsForOverview(sessions: List<HarnessSession>): List<HarnessSession> =
     sessions.sortedWith(compareByDescending { it.updatedAt?.let(::parseSessionUpdateInstant) })
 
 private val earliestSessionUpdate = java.time.Instant.parse("2000-01-01T00:00:00Z")
@@ -129,7 +132,7 @@ private fun parseSessionUpdateInstant(value: String): java.time.Instant? {
     return java.time.Instant.ofEpochMilli((epochSeconds * 1000).toLong())
 }
 
-fun isSessionUpdateRead(session: HermesSession, readAt: String?): Boolean {
+fun isSessionUpdateRead(session: HarnessSession, readAt: String?): Boolean {
     val updated = session.updatedAt?.let(::parseSessionUpdateInstant) ?: return false
     val read = readAt?.let(::parseSessionUpdateInstant) ?: return false
     return read >= updated
@@ -139,7 +142,7 @@ fun canMarkSessionRead(historyLoadedFor: String?, selectedId: String?, sessionId
     historyLoadedFor == sessionId && selectedId == sessionId
 
 fun confirmedReadAt(
-    session: HermesSession,
+    session: HarnessSession,
     now: java.time.Instant = java.time.Instant.now(),
 ): String {
     val updated = session.updatedAt?.let(::parseSessionUpdateInstant)
@@ -162,9 +165,9 @@ fun formatSessionUpdate(
     }
 
 fun prioritizeSessionsWithDrafts(
-    sessions: List<HermesSession>,
+    sessions: List<HarnessSession>,
     drafts: Map<String, String>,
-): List<HermesSession> {
+): List<HarnessSession> {
     val sorted = sortSessionsForOverview(sessions)
     val (withDraft, withoutDraft) = sorted.partition { drafts[it.id]?.isNotBlank() == true }
     return withDraft + withoutDraft
@@ -506,50 +509,28 @@ data class ClarifyRequest(
     val choices: List<String> = emptyList(),
 )
 
-enum class TranscriptionBackend {
-    DISABLED,
-    DASHBOARD,
-}
-
-data class ConnectionConfig(
-    val baseUrl: String,
-    val username: String = "",
-    val password: String = "",
-    val token: String = "",
-    val dashboardBaseUrl: String = "",
-    val dashboardToken: String = "",
-    val transcriptionBackend: TranscriptionBackend = TranscriptionBackend.DISABLED,
-) {
+data class ConnectionConfig(val baseUrl: String, val token: String = "") {
     val normalizedBaseUrl: String
-        get() = normalizeEndpoint(baseUrl)
+        get() {
+            val trimmed = baseUrl.trim().trimEnd('/')
+            val uri = runCatching { URI(trimmed) }.getOrNull() ?: return trimmed
+            val scheme = uri.scheme?.lowercase() ?: return trimmed
+            val host = uri.host?.lowercase()?.trimEnd('.') ?: return trimmed
+            if (
+                uri.userInfo != null ||
+                    uri.rawQuery != null ||
+                    uri.rawFragment != null ||
+                    uri.rawPath !in setOf("", "/")
+            )
+                return trimmed
+            val defaultPort =
+                (scheme == "https" && uri.port == 443) || (scheme == "http" && uri.port == 80)
+            return URI(scheme, null, host, if (defaultPort) -1 else uri.port, null, null, null)
+                .toString()
+        }
 
-    val normalizedDashboardBaseUrl: String
-        get() = normalizeEndpoint(dashboardBaseUrl)
-
-    private fun normalizeEndpoint(value: String): String {
-        val trimmed = value.trim().trimEnd('/')
-        val uri = runCatching { URI(trimmed) }.getOrNull() ?: return trimmed
-        val scheme = uri.scheme?.lowercase() ?: return trimmed
-        val host = uri.host?.lowercase()?.trimEnd('.') ?: return trimmed
-        if (
-            uri.userInfo != null ||
-                uri.rawQuery != null ||
-                uri.rawFragment != null ||
-                uri.rawPath !in setOf("", "/")
-        )
-            return trimmed
-        val defaultPort =
-            (scheme == "https" && uri.port == 443) || (scheme == "http" && uri.port == 80)
-        val port = if (defaultPort) -1 else uri.port
-        return URI(scheme, null, host, port, null, null, null).toString()
-    }
-
-    fun isAllowedEndpoint(): Boolean = isAllowedEndpoint(normalizedBaseUrl)
-
-    fun isAllowedDashboardEndpoint(): Boolean = isAllowedEndpoint(normalizedDashboardBaseUrl)
-
-    private fun isAllowedEndpoint(value: String): Boolean {
-        val uri = runCatching { URI(value) }.getOrNull() ?: return false
+    fun isAllowedEndpoint(): Boolean {
+        val uri = runCatching { URI(normalizedBaseUrl) }.getOrNull() ?: return false
         val scheme = uri.scheme?.lowercase() ?: return false
         val host = uri.host?.lowercase()?.trim('[', ']')?.trimEnd('.') ?: return false
         if (
@@ -567,13 +548,13 @@ data class ConnectionConfig(
         val address = runCatching { InetAddress.getByName(host) }.getOrNull() ?: return false
         return when (address) {
             is Inet4Address -> {
-                val octets = address.address.map { it.toInt() and 0xff }
-                octets[0] == 10 ||
-                    octets[0] == 127 ||
-                    (octets[0] == 169 && octets[1] == 254) ||
-                    (octets[0] == 172 && octets[1] in 16..31) ||
-                    (octets[0] == 192 && octets[1] == 168) ||
-                    (octets[0] == 100 && octets[1] in 64..127)
+                val o = address.address.map { it.toInt() and 0xff }
+                o[0] == 10 ||
+                    o[0] == 127 ||
+                    (o[0] == 169 && o[1] == 254) ||
+                    (o[0] == 172 && o[1] in 16..31) ||
+                    (o[0] == 192 && o[1] == 168) ||
+                    (o[0] == 100 && o[1] in 64..127)
             }
             is Inet6Address ->
                 address.isLoopbackAddress ||
@@ -596,8 +577,8 @@ fun isSafeExternalUrl(value: String): Boolean {
 
 internal fun JsonObject.string(key: String): String? = this[key]?.jsonPrimitive?.contentOrNull
 
-fun buildSessionTree(sessions: List<HermesSession>): Map<String, List<HermesSession>> {
-    val byParent = mutableMapOf<String, MutableList<HermesSession>>()
+fun buildSessionTree(sessions: List<HarnessSession>): Map<String, List<HarnessSession>> {
+    val byParent = mutableMapOf<String, MutableList<HarnessSession>>()
     for (s in sessions) {
         val parent = s.parentSessionId ?: continue
         byParent.getOrPut(parent) { mutableListOf() } += s
@@ -605,7 +586,7 @@ fun buildSessionTree(sessions: List<HermesSession>): Map<String, List<HermesSess
     return byParent
 }
 
-fun childCount(sessions: List<HermesSession>, sessionId: String): Int {
+fun childCount(sessions: List<HarnessSession>, sessionId: String): Int {
     val tree = buildSessionTree(sessions)
     val visited = mutableSetOf<String>()
     val queue = ArrayDeque<String>()
@@ -618,13 +599,13 @@ fun childCount(sessions: List<HermesSession>, sessionId: String): Int {
     return visited.size
 }
 
-fun rootSessions(sessions: List<HermesSession>): List<HermesSession> =
+fun rootSessions(sessions: List<HarnessSession>): List<HarnessSession> =
     sessions.filter { it.parentSessionId == null }
 
 fun sessionWithChildren(
-    parent: HermesSession,
-    tree: Map<String, List<HermesSession>>,
-): List<HermesSession> {
+    parent: HarnessSession,
+    tree: Map<String, List<HarnessSession>>,
+): List<HarnessSession> {
     val result = mutableListOf(parent)
     val children = tree[parent.id].orEmpty()
     for (child in children) {
@@ -633,9 +614,9 @@ fun sessionWithChildren(
     return result
 }
 
-data class TreeNode(val session: HermesSession, val depth: Int)
+data class TreeNode(val session: HarnessSession, val depth: Int)
 
-fun sessionTreeWithDepth(sessions: List<HermesSession>, parentId: String): List<TreeNode> {
+fun sessionTreeWithDepth(sessions: List<HarnessSession>, parentId: String): List<TreeNode> {
     val tree = buildSessionTree(sessions)
     val result = mutableListOf<TreeNode>()
     fun walk(id: String, depth: Int) {

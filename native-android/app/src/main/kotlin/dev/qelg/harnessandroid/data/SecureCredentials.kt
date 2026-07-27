@@ -19,19 +19,10 @@ class SecureCredentials(context: Context) {
 
     fun load(): ConnectionConfig? =
         runCatching {
-                val prefs = preferences()
-                val url = prefs.getString("url", null) ?: return null
+                val p = preferences()
                 ConnectionConfig(
-                    baseUrl = url,
-                    username = prefs.getString("username", "").orEmpty(),
-                    password = prefs.getString("password", "").orEmpty(),
-                    token = prefs.getString("token", "").orEmpty(),
-                    dashboardBaseUrl = prefs.getString("dashboard_url", "").orEmpty(),
-                    dashboardToken = prefs.getString("dashboard_token", "").orEmpty(),
-                    transcriptionBackend =
-                        prefs.getString("transcription_backend", null)?.let { value ->
-                            runCatching { TranscriptionBackend.valueOf(value) }.getOrNull()
-                        } ?: TranscriptionBackend.DISABLED,
+                    p.getString("url", null) ?: return null,
+                    p.getString("token", "").orEmpty(),
                 )
             }
             .getOrElse {
@@ -44,12 +35,7 @@ class SecureCredentials(context: Context) {
                 preferences()
                     .edit()
                     .putString("url", config.normalizedBaseUrl)
-                    .putString("username", config.username)
-                    .putString("password", config.password)
                     .putString("token", config.token)
-                    .putString("dashboard_url", config.normalizedDashboardBaseUrl)
-                    .putString("dashboard_token", config.dashboardToken)
-                    .putString("transcription_backend", config.transcriptionBackend.name)
                     .apply()
             }
             .getOrElse {
@@ -64,6 +50,6 @@ class SecureCredentials(context: Context) {
     }
 
     private companion object {
-        const val FILE_NAME = "hermes_credentials"
+        const val FILE_NAME = "harness_credentials"
     }
 }

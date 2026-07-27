@@ -1,7 +1,7 @@
 package dev.qelg.harnessandroid
 
 import dev.qelg.harnessandroid.data.ChatItem
-import dev.qelg.harnessandroid.data.HermesSession
+import dev.qelg.harnessandroid.data.HarnessSession
 import dev.qelg.harnessandroid.data.formatClockTime
 import java.time.Instant
 import java.time.ZoneId
@@ -138,7 +138,7 @@ class TimelineStateTest {
 
     @Test
     fun runtimeUnreadCountIsRemappedWhenSessionListRefreshes() {
-        val sessions = listOf(HermesSession("stored-1", "Chat", runtimeId = "runtime-1"))
+        val sessions = listOf(HarnessSession("stored-1", "Chat", runtimeId = "runtime-1"))
         assertEquals(mapOf("stored-1" to 2), remapUnread(mapOf("runtime-1" to 2), sessions))
     }
 

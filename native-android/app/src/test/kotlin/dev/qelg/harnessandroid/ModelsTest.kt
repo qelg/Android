@@ -3,7 +3,7 @@ package dev.qelg.harnessandroid
 import dev.qelg.harnessandroid.data.ChatItem
 import dev.qelg.harnessandroid.data.ConnectionConfig
 import dev.qelg.harnessandroid.data.DraftSubmission
-import dev.qelg.harnessandroid.data.HermesSession
+import dev.qelg.harnessandroid.data.HarnessSession
 import dev.qelg.harnessandroid.data.ModelCatalog
 import dev.qelg.harnessandroid.data.ModelSelection
 import dev.qelg.harnessandroid.data.ToolValuePreview
@@ -43,8 +43,8 @@ class ModelsTest {
     fun searchMatchesTitlePreviewSourceAndIdCaseInsensitively() {
         val sessions =
             listOf(
-                HermesSession("1", "Release Work", preview = "APK ready"),
-                HermesSession("delegate-42", "Notes", source = "delegate_task"),
+                HarnessSession("1", "Release Work", preview = "APK ready"),
+                HarnessSession("delegate-42", "Notes", source = "delegate_task"),
             )
         assertEquals(listOf("1"), filterSessions(sessions, "apk").map { it.id })
         assertEquals(listOf("1"), filterSessions(sessions, "RELEASE").map { it.id })
@@ -55,7 +55,7 @@ class ModelsTest {
     @Test
     fun childAndCompressionSessionFieldsAreDecoded() {
         val session =
-            HermesSession.fromJson(
+            HarnessSession.fromJson(
                 buildJsonObject {
                     put("id", "child")
                     put("source", "delegate_task")
@@ -72,7 +72,7 @@ class ModelsTest {
     @Test
     fun sessionTokenUsageFieldsAreDecodedFromApiMetadata() {
         val session =
-            HermesSession.fromJson(
+            HarnessSession.fromJson(
                 buildJsonObject {
                     put("id", "usage")
                     put("input_tokens", 100)
@@ -100,7 +100,7 @@ class ModelsTest {
 
     @Test
     fun sessionWithoutReportedTokenFieldsHasNoCumulativeUsage() {
-        val session = HermesSession.fromJson(buildJsonObject { put("id", "empty") })
+        val session = HarnessSession.fromJson(buildJsonObject { put("id", "empty") })
 
         assertEquals(null, session.cumulativeTokenUsage)
     }
@@ -108,7 +108,7 @@ class ModelsTest {
     @Test
     fun sessionListActivityFieldsAreDecoded() {
         val current =
-            HermesSession.fromJson(
+            HarnessSession.fromJson(
                 buildJsonObject {
                     put("id", "current")
                     put("title", "Current")
@@ -117,7 +117,7 @@ class ModelsTest {
                 }
             )
         val legacy =
-            HermesSession.fromJson(
+            HarnessSession.fromJson(
                 buildJsonObject {
                     put("id", "legacy")
                     put("title", "Legacy")
@@ -133,15 +133,15 @@ class ModelsTest {
     fun sessionsAreSortedNewestFirstByLatestUpdate() {
         val sessions =
             listOf(
-                HermesSession("old", "Old", updatedAt = "2026-07-18T08:00:00Z"),
-                HermesSession("unknown", "Unknown"),
-                HermesSession("new", "New", updatedAt = "2026-07-18T10:00:00Z"),
-                HermesSession("middle", "Middle", updatedAt = "2026-07-18T09:00:00Z"),
+                HarnessSession("old", "Old", updatedAt = "2026-07-18T08:00:00Z"),
+                HarnessSession("unknown", "Unknown"),
+                HarnessSession("new", "New", updatedAt = "2026-07-18T10:00:00Z"),
+                HarnessSession("middle", "Middle", updatedAt = "2026-07-18T09:00:00Z"),
             )
 
         assertEquals(
             listOf("new", "middle", "old", "unknown"),
-            sortSessionsForOverview(sessions).map(HermesSession::id),
+            sortSessionsForOverview(sessions).map(HarnessSession::id),
         )
     }
 
@@ -160,7 +160,7 @@ class ModelsTest {
 
     @Test
     fun sessionIsReadOnlyWhenAndroidConfirmedItAfterTheLatestUpdate() {
-        val session = HermesSession("chat", "Chat", updatedAt = "2026-07-18T10:00:00Z")
+        val session = HarnessSession("chat", "Chat", updatedAt = "2026-07-18T10:00:00Z")
 
         assertTrue(!isSessionUpdateRead(session, null))
         assertTrue(!isSessionUpdateRead(session, "2026-07-18T09:59:59Z"))
@@ -178,7 +178,7 @@ class ModelsTest {
 
     @Test
     fun confirmedReadTimestampCoversFutureServerUpdate() {
-        val session = HermesSession("chat", "Chat", updatedAt = "2026-07-18T10:01:00Z")
+        val session = HarnessSession("chat", "Chat", updatedAt = "2026-07-18T10:01:00Z")
 
         assertEquals(
             "2026-07-18T10:01:00Z",
@@ -188,7 +188,7 @@ class ModelsTest {
 
     @Test
     fun nonFiniteNumericSessionUpdateIsUnknownAndUnread() {
-        val session = HermesSession("chat", "Chat", updatedAt = "NaN")
+        val session = HarnessSession("chat", "Chat", updatedAt = "NaN")
 
         assertTrue(!isSessionUpdateRead(session, "2026-07-18T10:00:00Z"))
         assertEquals(null, formatSessionUpdate("Infinity"))
@@ -200,10 +200,10 @@ class ModelsTest {
     fun sessionsWithDraftsArePlacedFirstWithoutChangingGroupOrder() {
         val sessions =
             listOf(
-                HermesSession("1", "First"),
-                HermesSession("2", "Second"),
-                HermesSession("3", "Third"),
-                HermesSession("4", "Fourth"),
+                HarnessSession("1", "First"),
+                HarnessSession("2", "Second"),
+                HarnessSession("3", "Third"),
+                HarnessSession("4", "Fourth"),
             )
 
         val sorted = prioritizeSessionsWithDrafts(sessions, mapOf("2" to "draft", "4" to "other"))
@@ -213,7 +213,7 @@ class ModelsTest {
 
     @Test
     fun blankDraftsDoNotAffectSessionOrder() {
-        val sessions = listOf(HermesSession("1", "First"), HermesSession("2", "Second"))
+        val sessions = listOf(HarnessSession("1", "First"), HarnessSession("2", "Second"))
 
         assertEquals(
             listOf("1", "2"),
@@ -500,7 +500,7 @@ class ModelsTest {
     @Test
     fun sessionDecodesItsPersistedModel() {
         val session =
-            HermesSession.fromJson(
+            HarnessSession.fromJson(
                 buildJsonObject {
                     put("id", "chat")
                     put("model", "deep")
@@ -513,7 +513,7 @@ class ModelsTest {
     @Test
     fun sessionActivityIsDecodedForLiveIndicators() {
         val session =
-            HermesSession.fromJson(
+            HarnessSession.fromJson(
                 buildJsonObject {
                     put("id", "live")
                     put("title", "Live elsewhere")
@@ -544,11 +544,11 @@ class ModelsTest {
 
         assertEquals(
             ModelSelection("api_server", "deep"),
-            modelCatalogForSession(catalog, HermesSession("b", "B", model = "deep")).selected,
+            modelCatalogForSession(catalog, HarnessSession("b", "B", model = "deep")).selected,
         )
         assertEquals(
             ModelSelection("api_server", "default"),
-            modelCatalogForSession(catalog, HermesSession("c", "C")).selected,
+            modelCatalogForSession(catalog, HarnessSession("c", "C")).selected,
         )
     }
 
@@ -556,8 +556,8 @@ class ModelsTest {
     fun resumedLineageUsesTheLatestCompressionChildsModelUnlessExplicitlyOverridden() {
         val sessions =
             listOf(
-                HermesSession("root", "Chat", model = "fast"),
-                HermesSession("tip", "Chat", parentSessionId = "root", model = "deep"),
+                HarnessSession("root", "Chat", model = "fast"),
+                HarnessSession("tip", "Chat", parentSessionId = "root", model = "deep"),
             )
 
         assertEquals("deep", sessionModelForLineage("root", "tip", sessions, emptyMap()))
@@ -570,7 +570,10 @@ class ModelsTest {
     @Test
     fun serverRefreshCannotOverwriteAnUnpersistedExplicitModelSelection() {
         val staleServerSessions =
-            listOf(HermesSession("a", "A", model = "fast"), HermesSession("b", "B", model = "deep"))
+            listOf(
+                HarnessSession("a", "A", model = "fast"),
+                HarnessSession("b", "B", model = "deep"),
+            )
 
         assertEquals(
             listOf("deep", "deep"),
@@ -581,7 +584,10 @@ class ModelsTest {
     @Test
     fun explicitModelSelectionOnlyChangesTheCurrentSession() {
         val sessions =
-            listOf(HermesSession("a", "A", model = "fast"), HermesSession("b", "B", model = "deep"))
+            listOf(
+                HarnessSession("a", "A", model = "fast"),
+                HarnessSession("b", "B", model = "deep"),
+            )
 
         assertEquals(
             listOf("default", "deep"),

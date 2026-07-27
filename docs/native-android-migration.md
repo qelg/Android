@@ -1,32 +1,11 @@
-# Native Android migration (complete)
+# Native Android client
 
-Hermes Chat is now a native Kotlin/Jetpack Compose Android client. The Flutter client has been retired.
+Harness Android is a native Kotlin/Jetpack Compose client for qelg/harness.
 
-## Architecture
+- `HarnessClient`: OkHttp transport for Harness REST and SSE endpoints.
+- `ChatViewModel`: lifecycle-aware connection, session, history, and streaming state.
+- `MainActivity`: responsive Compose session and chat UI.
+- `SecureCredentials`: optional bearer-token storage backed by Android Keystore.
 
-- `HermesClient`: OkHttp REST/SSE transport for the coherent API Server session/runtime path, plus an isolated optional Dashboard transcription helper.
-- `ChatViewModel`: unidirectional `StateFlow<ChatUiState>`, persistent-session mapping, streaming timeline updates, cancellation, and `SavedStateHandle` restoration after process recreation.
-- `SecureCredentials`: Android Keystore-backed encrypted preferences for API and optional Dashboard credentials.
-- Compose UI: adaptive session/chat layout, complete child-aware session search, optional Dashboard voice input, streaming messages, grouped semantic tool cards, and Markdown.
-
-## Protocol compatibility
-
-All session/runtime requests use `Authorization: Bearer <API_SERVER_KEY>`. The client verifies the endpoint through `GET /v1/capabilities`, reads every session page through `/api/sessions?include_children=true`, and submits controllable turns through `POST /v1/runs`. It then consumes structured events from `GET /v1/runs/{run_id}/events`. Root sessions, compression children, and `delegate_task` children are all retained in the UI.
-
-Optional transcription is the only independently routed function. It calls the Dashboard's `/api/audio/transcribe` with either a Dashboard session token or password-authenticated cookie. Session IDs, history, runtime events, interrupt, and approvals remain atomically on the API Server.
-
-The run events `message.delta`, `tool.started`, `tool.completed`, `approval.request`, `run.completed`, `run.failed`, and `run.cancelled` are translated into the existing timeline model. Approval decisions use `POST /v1/runs/{run_id}/approval`; stopping uses `POST /v1/runs/{run_id}/stop`, which interrupts the server-side agent before the client closes its event stream.
-
-The client follows SessionDB compression children to the newest lineage leaf before continuing a conversation, while keeping the root session selected in the UI.
-
-The API Server shares Hermes' persistent session database but deliberately omits the dashboard's audio transcription, detailed context breakdown, clarify responses, and per-session model-switching RPCs.
-
-## Build and test
-
-```bash
-./native-android/gradlew -p native-android spotlessCheck lintDebug testDebugUnitTest assembleDebug assembleDebugAndroidTest
-```
-
-## Signing
-
-Release APKs are signed with the same 4096-bit RSA key (alias `hermes-chat`) previously used for the Flutter APK. See `native-android/SIGNING.md`.
+The client talks only to qelg/harness. Unsupported capabilities are disabled instead of routing
+data through another backend. Release signing is documented in `native-android/SIGNING.md`.
