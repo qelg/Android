@@ -348,9 +348,6 @@ class HarnessClient(
     suspend fun conversationTokenDetails(storedSessionId: String): ConversationTokenDetails =
         ConversationTokenDetails(sessionTokenUsage(storedSessionId), null)
 
-    suspend fun transcribe(bytes: ByteArray, mimeType: String): String =
-        throw UnsupportedOperationException("Harness does not expose voice transcription")
-
     private suspend fun request(
         method: String,
         path: String,

@@ -3,6 +3,7 @@ package dev.qelg.harnessandroid
 import android.app.Application
 import androidx.lifecycle.*
 import dev.qelg.harnessandroid.data.*
+import dev.qelg.harnessandroid.voice.*
 import java.io.Closeable
 import java.time.Instant
 import kotlin.coroutines.EmptyCoroutineContext
@@ -72,7 +73,8 @@ data class ChatUiState(
     val modelCatalog: ModelCatalog = ModelCatalog(),
     val modelLoading: Boolean = false,
     val transcribing: Boolean = false,
-    val transcriptionEnabled: Boolean = false,
+    val transcriptionStatus: String? = null,
+    val whisperModel: WhisperModel = WhisperModel.Base,
     val approval: ApprovalRequest? = null,
     val clarify: ClarifyRequest? = null,
     val error: ErrorMessage? = null,
@@ -86,7 +88,15 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     private val credentials = SecureCredentials(application)
     private val draftStore = DraftStore(application)
     private val readStateStore = ReadStateStore(application)
-    private val _state = MutableStateFlow(ChatUiState(selectedId = savedState["selectedId"]))
+    private val localWhisper = LocalWhisper(application)
+    private val whisperModelStore = WhisperModelStore(application)
+    private val _state =
+        MutableStateFlow(
+            ChatUiState(
+                selectedId = savedState["selectedId"],
+                whisperModel = whisperModelStore.load(),
+            )
+        )
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
     val updateManager = UpdateManager(application)
     private var draftNamespace = ""
@@ -156,7 +166,6 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 error = null,
                 reconnectSeconds = null,
                 tokenUsage = null,
-                transcriptionEnabled = false,
             )
         }
         eventJob =
@@ -205,7 +214,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         runtimeId = null
         usageStoredId = null
         savedState["selectedId"] = null
-        _state.value = ChatUiState()
+        _state.value = ChatUiState(whisperModel = whisperModelStore.load())
     }
 
     fun setSearch(value: String) = _state.update { it.copy(search = value) }
@@ -602,23 +611,35 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         }
     }
 
-    fun transcribe(
-        bytes: ByteArray,
-        mimeType: String,
-        onResult: (Result<String>) -> Unit,
-        cleanup: () -> Unit,
-    ) =
+    fun selectWhisperModel(model: WhisperModel) {
+        whisperModelStore.save(model)
+        _state.update { it.copy(whisperModel = model) }
+    }
+
+    fun isWhisperModelDownloaded(model: WhisperModel): Boolean = localWhisper.isDownloaded(model)
+
+    fun transcribe(samples: FloatArray, onResult: (Result<String>) -> Unit) =
         viewModelScope.launch {
+            val model = state.value.whisperModel
             val result =
                 runVoiceTranscription(
                     setTranscribing = { active ->
-                        _state.update { it.copy(transcribing = active) }
+                        _state.update {
+                            it.copy(
+                                transcribing = active,
+                                transcriptionStatus =
+                                    if (active) "Preparing Whisper ${model.displayName}…" else null,
+                            )
+                        }
                     },
-                    operation = { client?.transcribe(bytes, mimeType) ?: error("Not connected") },
+                    operation = {
+                        localWhisper.transcribe(samples, model) { status ->
+                            _state.update { it.copy(transcriptionStatus = status) }
+                        }
+                    },
                 )
             result.onFailure(::showError)
             onResult(result)
-            cleanup()
         }
 
     fun reportError(error: Throwable) = showError(error)
@@ -982,6 +1003,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         }
 
     override fun onCleared() {
+        dispatchClose(localWhisper)
         dispatchClose(client)
         client = null
         super.onCleared()

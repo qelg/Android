@@ -3,8 +3,6 @@
 package dev.qelg.harnessandroid
 
 import android.Manifest
-import android.media.MediaRecorder
-import android.os.Build
 import android.os.Bundle
 import android.widget.TextView
 import androidx.activity.ComponentActivity
@@ -41,7 +39,8 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.qelg.harnessandroid.data.*
-import java.io.File
+import dev.qelg.harnessandroid.voice.LocalAudioRecorder
+import dev.qelg.harnessandroid.voice.WhisperModel
 import java.text.NumberFormat
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
@@ -426,6 +425,7 @@ private fun ChatPane(
 ) {
     val input = state.selectedId?.let(state.drafts::get).orEmpty()
     var showModels by rememberSaveable(state.selectedId) { mutableStateOf(false) }
+    var showWhisperModels by rememberSaveable { mutableStateOf(false) }
     var showUsageDetails by rememberSaveable(state.selectedId) { mutableStateOf(false) }
     var fullScreenDetail by remember(state.selectedId) { mutableStateOf<FullScreenDetail?>(null) }
     val blocks = remember(state.items) { groupTimeline(state.items) }
@@ -493,6 +493,12 @@ private fun ChatPane(
                 },
                 windowInsets = WindowInsets(0, 0, 0, 0),
                 actions = {
+                    IconButton(
+                        onClick = { showWhisperModels = true },
+                        enabled = !state.transcribing,
+                    ) {
+                        Icon(Icons.Default.SettingsVoice, "Choose local Whisper model")
+                    }
                     IconButton(
                         onClick = {
                             showModels = true
@@ -580,7 +586,7 @@ private fun ChatPane(
                 ) {
                     CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                     Spacer(Modifier.width(8.dp))
-                    Text("Uploading and transcribing voice…")
+                    Text(state.transcriptionStatus ?: "Transcribing locally with Whisper…")
                 }
             }
             state.approval?.let { approval ->
@@ -648,13 +654,11 @@ private fun ChatPane(
                 }
             }
             Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
-                if (state.transcriptionEnabled) {
-                    VoiceButton(
-                        vm,
-                        enabled = !state.transcribing && !state.connecting && !state.active,
-                    ) { text ->
-                        vm.send(text)
-                    }
+                VoiceButton(
+                    vm,
+                    enabled = !state.transcribing && !state.connecting && !state.active,
+                ) { text ->
+                    vm.setDraft(appendTranscript(input, text))
                 }
                 OutlinedTextField(
                     input,
@@ -696,6 +700,14 @@ private fun ChatPane(
                 showModels = false
             },
             onDismiss = { showModels = false },
+        )
+    }
+    if (showWhisperModels) {
+        WhisperModelDialog(
+            selected = state.whisperModel,
+            isDownloaded = vm::isWhisperModelDownloaded,
+            onSelect = vm::selectWhisperModel,
+            onDismiss = { showWhisperModels = false },
         )
     }
     if (showUsageDetails) {
@@ -1608,77 +1620,101 @@ private fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun VoiceButton(vm: ChatViewModel, enabled: Boolean, onText: (String) -> Unit) {
-    val context = LocalContext.current
-    val lifecycleOwner = LocalLifecycleOwner.current
-    var recorder by remember { mutableStateOf<MediaRecorder?>(null) }
-    var file by remember { mutableStateOf<File?>(null) }
-    fun discardRecording() {
-        val active = recorder
-        recorder = null
-        runCatching { active?.stop() }
-        runCatching { active?.release() }
-        file?.delete()
-        file = null
-    }
-    fun start() {
-        val output = File.createTempFile("harness-voice-", ".m4a", context.cacheDir)
-        @Suppress("DEPRECATION")
-        val next =
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(context)
-            else MediaRecorder()
-        runCatching {
-                next.setAudioSource(MediaRecorder.AudioSource.MIC)
-                next.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
-                next.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
-                next.setOutputFile(output.absolutePath)
-                next.prepare()
-                next.start()
-                file = output
-                recorder = next
+private fun WhisperModelDialog(
+    selected: WhisperModel,
+    isDownloaded: (WhisperModel) -> Boolean,
+    onSelect: (WhisperModel) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        icon = { Icon(Icons.Default.SettingsVoice, null) },
+        title = { Text("Local Whisper model") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    "Larger models generally improve transcription, but need more storage, memory, and time. The selected model downloads on first use. Audio stays on this device.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(Modifier.height(12.dp))
+                WhisperModel.All.forEach { model ->
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .clickable(role = Role.RadioButton) { onSelect(model) }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = selected.id == model.id,
+                            onClick = { onSelect(model) },
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(model.displayName, style = MaterialTheme.typography.bodyLarge)
+                            Text(
+                                buildString {
+                                    append(model.downloadSize)
+                                    if (isDownloaded(model)) append(" · Downloaded")
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
             }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+    )
+}
+
+internal fun appendTranscript(draft: String, transcript: String): String =
+    listOf(draft.trimEnd(), transcript.trim()).filter(String::isNotBlank).joinToString(" ")
+
+@Composable
+private fun VoiceButton(vm: ChatViewModel, enabled: Boolean, onText: (String) -> Unit) {
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
+    var recorder by remember { mutableStateOf<LocalAudioRecorder?>(null) }
+
+    fun discardRecording() {
+        recorder?.discard()
+        recorder = null
+    }
+
+    fun start() {
+        runCatching { LocalAudioRecorder().also { it.start() } }
+            .onSuccess { recorder = it }
             .onFailure {
-                runCatching { next.release() }
-                output.delete()
+                discardRecording()
                 vm.reportError(IllegalStateException("Could not start voice recording", it))
             }
     }
+
     val permission =
-        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-            if (it) start()
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) start()
+            else vm.reportError(IllegalStateException("Microphone permission is required"))
         }
     IconButton(
         onClick = {
             val active = recorder
-            if (active == null) permission.launch(Manifest.permission.RECORD_AUDIO)
-            else {
+            if (active == null) {
+                permission.launch(Manifest.permission.RECORD_AUDIO)
+            } else {
                 recorder = null
-                val audio = file
-                file = null
-                val stopped = runCatching { active.stop() }.isSuccess
-                runCatching { active.release() }
-                if (!stopped || audio == null || audio.length() == 0L) {
-                    audio?.delete()
-                    vm.reportError(
-                        IllegalStateException("Voice recording failed; nothing was uploaded")
-                    )
-                } else {
-                    val bytes =
-                        runCatching { audio.readBytes() }
-                            .getOrElse {
-                                audio.delete()
-                                vm.reportError(it)
-                                return@IconButton
-                            }
-                    vm.transcribe(bytes, "audio/mp4", { it.onSuccess(onText) }, { audio.delete() })
+                scope.launch {
+                    runCatching { active.stop() }
+                        .onSuccess { samples -> vm.transcribe(samples) { it.onSuccess(onText) } }
+                        .onFailure(vm::reportError)
                 }
             }
         },
-        enabled = enabled,
+        enabled = enabled || recorder != null,
     ) {
         Icon(
             if (recorder == null) Icons.Default.Mic else Icons.Default.Stop,
-            if (recorder == null) "Record voice" else "Stop recording",
+            if (recorder == null) "Record with local Whisper" else "Stop recording",
             tint =
                 if (recorder == null) LocalContentColor.current else MaterialTheme.colorScheme.error,
         )
