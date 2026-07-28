@@ -225,12 +225,12 @@ class TokenUsageTest {
     fun snapshotUsesLastCallForContextAndSumsEveryModelCall() {
         val first =
             Json.parseToJsonElement(
-                    """{"role":"assistant","model":"terra","metadata":{"provider_response":{"usage":{"input_tokens":96368,"input_tokens_details":{"cached_tokens":92672},"output_tokens":326,"output_tokens_details":{"reasoning_tokens":231}}}}}"""
+                    """{"role":"assistant","model":"gpt-5.6-terra","metadata":{"provider_response":{"usage":{"input_tokens":96368,"input_tokens_details":{"cached_tokens":92672},"output_tokens":326,"output_tokens_details":{"reasoning_tokens":231}}}}}"""
                 )
                 .jsonObject
         val second =
             Json.parseToJsonElement(
-                    """{"role":"assistant","model":"luna","metadata":{"provider_response":{"usage":{"input_tokens":1000,"input_tokens_details":{"cached_tokens":800,"cache_write_tokens":50},"output_tokens":80,"output_tokens_details":{"reasoning_tokens":20}}}}}"""
+                    """{"role":"assistant","model":"gpt-5.6-luna","metadata":{"provider_response":{"usage":{"input_tokens":1000,"input_tokens_details":{"cached_tokens":800,"cache_write_tokens":50},"output_tokens":80,"output_tokens_details":{"reasoning_tokens":20}}}}}"""
                 )
                 .jsonObject
 
@@ -244,7 +244,7 @@ class TokenUsageTest {
         assertEquals(251L, cumulative.reasoningTokens)
         assertEquals(1080L, snapshot.context!!.contextUsed)
         assertEquals(0L, snapshot.context!!.contextMax)
-        assertEquals("luna", snapshot.context!!.model)
+        assertEquals("gpt-5.6-luna", snapshot.context!!.model)
         assertEquals(listOf(1000L, 80L), snapshot.context!!.categories.map { it.tokens })
     }
 
