@@ -12,7 +12,7 @@ A native Kotlin/Jetpack Compose Android client for [qelg/harness](https://github
 - Keep drafts and read state locally
 - Store an optional bearer token using Android Keystore
 - Discover providers and tools exposed by Harness
-- Record and transcribe voice entirely on-device with a configurable Whisper model (verified model downloads on first use)
+- Record, transcribe, and send voice messages entirely on-device with a configurable Whisper model (verified model downloads on first use)
 
 Capabilities qelg/harness does not expose—approval responses, run cancellation, and detailed token/context
 accounting—stay unavailable rather than using a separate legacy backend. Voice transcription is local and does
