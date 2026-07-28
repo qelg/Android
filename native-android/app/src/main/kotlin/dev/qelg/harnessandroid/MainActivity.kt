@@ -26,6 +26,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -33,6 +35,7 @@ import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
@@ -959,8 +962,15 @@ internal fun SessionEventsScreen(
     onDismiss: () -> Unit,
 ) {
     LaunchedEffect(session.id) { onLoad() }
-    val eventsById =
-        remember(events) { events.mapNotNull { event -> event.id?.let { it to event } }.toMap() }
+    val listState = rememberLazyListState()
+    val arrows = remember(events) { eventCausationArrows(events) }
+    val gutterWidth =
+        if (arrows.isEmpty()) 0.dp
+        else (32 + (arrows.maxOfOrNull { it.lane } ?: 0).inc() * 12).coerceAtMost(112).dp
+    val eventIndexesByKey =
+        remember(events) {
+            events.indices.associateBy { index -> eventRowKey(index, events[index]) }
+        }
     BackHandler(onBack = onDismiss)
     FullScreenDetailContainer {
         Column(Modifier.fillMaxSize()) {
@@ -998,83 +1008,128 @@ internal fun SessionEventsScreen(
                         )
                     }
                 else ->
-                    LazyColumn(Modifier.fillMaxSize()) {
-                        error?.let { currentError ->
-                            item {
-                                Text(
-                                    currentError.text,
-                                    Modifier.fillMaxWidth().padding(12.dp),
-                                    color = MaterialTheme.colorScheme.error,
-                                    style = MaterialTheme.typography.bodySmall,
+                    Box(Modifier.fillMaxSize()) {
+                        LazyColumn(
+                            Modifier.fillMaxSize(),
+                            state = listState,
+                            contentPadding = PaddingValues(start = gutterWidth),
+                        ) {
+                            error?.let { currentError ->
+                                item(key = "event-error") {
+                                    Text(
+                                        currentError.text,
+                                        Modifier.fillMaxWidth().padding(12.dp),
+                                        color = MaterialTheme.colorScheme.error,
+                                        style = MaterialTheme.typography.bodySmall,
+                                    )
+                                }
+                            }
+                            itemsIndexed(
+                                events,
+                                key = { index, event -> eventRowKey(index, event) },
+                            ) { _, event ->
+                                ListItem(
+                                    headlineContent = { Text(event.displayName) },
+                                    supportingContent = {
+                                        Column {
+                                            event.timestamp?.let { Text(formatEventTime(it)) }
+                                            event.originator?.let {
+                                                Text(
+                                                    "Originator: $it",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color =
+                                                        MaterialTheme.colorScheme.onSurfaceVariant,
+                                                )
+                                            }
+                                        }
+                                    },
+                                    trailingContent = {
+                                        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null)
+                                    },
+                                    modifier =
+                                        Modifier.fillMaxWidth().clickable(
+                                            onClickLabel = "Open ${event.displayName} JSON payload",
+                                            role = Role.Button,
+                                        ) {
+                                            onOpenEvent(event)
+                                        },
                                 )
                             }
                         }
-                        items(events, key = { it.id ?: it.raw.toString() }) { event ->
-                            ListItem(
-                                headlineContent = { Text(event.displayName) },
-                                supportingContent = {
-                                    Column {
-                                        event.timestamp?.let { Text(formatEventTime(it)) }
-                                        event.originator?.let {
-                                            Text(
-                                                "Originator: $it",
-                                                style = MaterialTheme.typography.labelSmall,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            )
-                                        }
-                                        event.causationId?.let { causationId ->
-                                            CausationLink(
-                                                causationId = causationId,
-                                                target = eventsById[causationId],
-                                                onOpenEvent = onOpenEvent,
-                                            )
-                                        }
-                                    }
-                                },
-                                trailingContent = {
-                                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null)
-                                },
-                                modifier =
-                                    Modifier.fillMaxWidth().clickable(
-                                        onClickLabel = "Open ${event.displayName} JSON payload",
-                                        role = Role.Button,
-                                    ) {
-                                        onOpenEvent(event)
-                                    },
-                            )
-                        }
+                        EventCausationCanvas(
+                            events = events,
+                            arrows = arrows,
+                            listState = listState,
+                            gutterWidth = gutterWidth,
+                            eventIndexesByKey = eventIndexesByKey,
+                        )
                     }
             }
         }
     }
 }
 
+private fun eventRowKey(index: Int, event: SessionEvent): String =
+    "event-row:$index:${event.id ?: "unknown"}"
+
 @Composable
-private fun CausationLink(
-    causationId: Long,
-    target: SessionEvent?,
-    onOpenEvent: (SessionEvent) -> Unit,
+private fun EventCausationCanvas(
+    events: List<SessionEvent>,
+    arrows: List<EventCausationArrow>,
+    listState: LazyListState,
+    gutterWidth: Dp,
+    eventIndexesByKey: Map<String, Int>,
 ) {
-    val label =
-        target?.let { "Caused by ${it.displayName} (#$causationId)" }
-            ?: "Causation event #$causationId unavailable"
-    val description =
-        target?.let { "Caused by ${it.displayName}, event $causationId. Open causation event" }
-            ?: "Causation event $causationId is not available"
-    TextButton(
-        onClick = { target?.let(onOpenEvent) },
-        enabled = target != null,
-        modifier = Modifier.semantics { contentDescription = description },
-        contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp),
+    val primary = MaterialTheme.colorScheme.primary
+    val secondary = MaterialTheme.colorScheme.tertiary
+    val descriptions =
+        remember(events, arrows) {
+            arrows.joinToString(". ") { arrow ->
+                "${events[arrow.sourceIndex].displayName} caused by ${events[arrow.targetIndex].displayName}"
+            }
+        }
+    val visibleItems = listState.layoutInfo.visibleItemsInfo
+    Canvas(
+        Modifier.fillMaxSize().testTag("causation-arrows").semantics {
+            contentDescription = descriptions
+        }
     ) {
-        Icon(Icons.Default.ArrowUpward, null, Modifier.size(16.dp))
-        Spacer(Modifier.width(4.dp))
-        Text(label, style = MaterialTheme.typography.labelSmall)
+        val centers =
+            visibleItems
+                .mapNotNull { item ->
+                    val index = eventIndexesByKey[item.key as? String] ?: return@mapNotNull null
+                    index to (item.offset + item.size / 2f)
+                }
+                .toMap()
+        val rowEdge = gutterWidth.toPx() - 2.dp.toPx()
+        val laneSpacing = 12.dp.toPx()
+        val arrowSize = 7.dp.toPx()
+        arrows.forEach { arrow ->
+            val sourceY = centers[arrow.sourceIndex] ?: return@forEach
+            val targetY = centers[arrow.targetIndex] ?: return@forEach
+            val laneX = rowEdge - 14.dp.toPx() - arrow.lane * laneSpacing
+            val color = if (arrow.lane % 2 == 0) primary else secondary
+            val path =
+                Path().apply {
+                    moveTo(rowEdge, sourceY)
+                    cubicTo(laneX, sourceY, laneX, targetY, rowEdge, targetY)
+                }
+            drawPath(path, color, style = Stroke(width = 2.dp.toPx()))
+            drawLine(
+                color,
+                start = androidx.compose.ui.geometry.Offset(rowEdge, targetY),
+                end = androidx.compose.ui.geometry.Offset(rowEdge - arrowSize, targetY - arrowSize),
+                strokeWidth = 2.dp.toPx(),
+            )
+            drawLine(
+                color,
+                start = androidx.compose.ui.geometry.Offset(rowEdge, targetY),
+                end = androidx.compose.ui.geometry.Offset(rowEdge - arrowSize, targetY + arrowSize),
+                strokeWidth = 2.dp.toPx(),
+            )
+        }
     }
 }
-
-internal fun causationEvent(event: SessionEvent, events: List<SessionEvent>): SessionEvent? =
-    event.causationId?.let { causationId -> events.firstOrNull { it.id == causationId } }
 
 @Composable
 internal fun SessionEventPayloadScreen(event: SessionEvent, onDismiss: () -> Unit) {

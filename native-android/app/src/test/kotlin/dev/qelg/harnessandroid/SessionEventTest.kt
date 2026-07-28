@@ -52,20 +52,4 @@ class SessionEventTest {
         assertEquals(null, event.causationId)
         assertEquals(raw, event.raw)
     }
-
-    @Test
-    fun resolvesCausationEventById() {
-        val cause =
-            SessionEvent.fromJson(
-                Json.parseToJsonElement("""{"id":4,"name":"llm.run.requested"}""").jsonObject
-            )
-        val effect =
-            SessionEvent.fromJson(
-                Json.parseToJsonElement("""{"id":7,"name":"llm.run.started","causation_id":4}""")
-                    .jsonObject
-            )
-
-        assertEquals(cause, causationEvent(effect, listOf(cause, effect)))
-        assertEquals(null, causationEvent(effect, listOf(effect)))
-    }
 }

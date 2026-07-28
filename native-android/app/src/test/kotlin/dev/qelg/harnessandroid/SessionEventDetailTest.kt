@@ -6,7 +6,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
-import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -15,7 +14,6 @@ import dev.qelg.harnessandroid.data.HarnessSession
 import dev.qelg.harnessandroid.data.SessionEvent
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
-import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -74,7 +72,7 @@ class SessionEventDetailTest {
     }
 
     @Test
-    fun causationArrowOpensResolvedEventAndDescribesMissingEvent() {
+    fun causationCanvasConnectsRowsWithoutShowingInternalIds() {
         val cause =
             SessionEvent.fromJson(
                 Json.parseToJsonElement(
@@ -96,7 +94,6 @@ class SessionEventDetailTest {
                     )
                     .jsonObject
             )
-        var opened: SessionEvent? = null
         composeRule.activityRule.scenario.onActivity { activity ->
             activity.setContent {
                 MaterialTheme {
@@ -107,7 +104,7 @@ class SessionEventDetailTest {
                         error = null,
                         onLoad = {},
                         onRetry = {},
-                        onOpenEvent = { opened = it },
+                        onOpenEvent = {},
                         onDismiss = {},
                     )
                 }
@@ -115,16 +112,11 @@ class SessionEventDetailTest {
         }
 
         composeRule
-            .onNodeWithContentDescription(
-                "Caused by llm.run.requested, event 1. Open causation event"
-            )
-            .assertIsEnabled()
-            .performClick()
-        composeRule.runOnIdle { assertEquals(cause, opened) }
-        composeRule.onNodeWithText("Causation event #99 unavailable").assertIsDisplayed()
-        composeRule
-            .onNodeWithContentDescription("Causation event 99 is not available")
+            .onNodeWithContentDescription("llm.run.started caused by llm.run.requested")
             .assertIsDisplayed()
+        composeRule.onNodeWithText("Caused by", substring = true).assertDoesNotExist()
+        composeRule.onNodeWithText("#1", substring = true).assertDoesNotExist()
+        composeRule.onNodeWithText("#99", substring = true).assertDoesNotExist()
     }
 
     @Test
