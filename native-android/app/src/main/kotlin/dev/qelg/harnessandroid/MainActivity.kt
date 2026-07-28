@@ -30,6 +30,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -957,6 +959,8 @@ internal fun SessionEventsScreen(
     onDismiss: () -> Unit,
 ) {
     LaunchedEffect(session.id) { onLoad() }
+    val eventsById =
+        remember(events) { events.mapNotNull { event -> event.id?.let { it to event } }.toMap() }
     BackHandler(onBack = onDismiss)
     FullScreenDetailContainer {
         Column(Modifier.fillMaxSize()) {
@@ -1018,6 +1022,13 @@ internal fun SessionEventsScreen(
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             )
                                         }
+                                        event.causationId?.let { causationId ->
+                                            CausationLink(
+                                                causationId = causationId,
+                                                target = eventsById[causationId],
+                                                onOpenEvent = onOpenEvent,
+                                            )
+                                        }
                                     }
                                 },
                                 trailingContent = {
@@ -1037,6 +1048,33 @@ internal fun SessionEventsScreen(
         }
     }
 }
+
+@Composable
+private fun CausationLink(
+    causationId: Long,
+    target: SessionEvent?,
+    onOpenEvent: (SessionEvent) -> Unit,
+) {
+    val label =
+        target?.let { "Caused by ${it.displayName} (#$causationId)" }
+            ?: "Causation event #$causationId unavailable"
+    val description =
+        target?.let { "Caused by ${it.displayName}, event $causationId. Open causation event" }
+            ?: "Causation event $causationId is not available"
+    TextButton(
+        onClick = { target?.let(onOpenEvent) },
+        enabled = target != null,
+        modifier = Modifier.semantics { contentDescription = description },
+        contentPadding = PaddingValues(horizontal = 0.dp, vertical = 2.dp),
+    ) {
+        Icon(Icons.Default.ArrowUpward, null, Modifier.size(16.dp))
+        Spacer(Modifier.width(4.dp))
+        Text(label, style = MaterialTheme.typography.labelSmall)
+    }
+}
+
+internal fun causationEvent(event: SessionEvent, events: List<SessionEvent>): SessionEvent? =
+    event.causationId?.let { causationId -> events.firstOrNull { it.id == causationId } }
 
 @Composable
 internal fun SessionEventPayloadScreen(event: SessionEvent, onDismiss: () -> Unit) {

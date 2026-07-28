@@ -13,6 +13,7 @@ data class SessionEvent(
     val name: String,
     val timestamp: Instant?,
     val originator: String?,
+    val causationId: Long?,
     val raw: JsonObject,
 ) {
     val displayName: String
@@ -40,6 +41,7 @@ data class SessionEvent(
                             ?.let { it as? JsonPrimitive }
                             ?.contentOrNull
                             ?.takeIf(String::isNotBlank),
+                causationId = (value["causation_id"] as? JsonPrimitive)?.longOrNull,
                 raw = value,
             )
     }

@@ -6,13 +6,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import dev.qelg.harnessandroid.data.HarnessSession
 import dev.qelg.harnessandroid.data.SessionEvent
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -68,6 +71,60 @@ class SessionEventDetailTest {
         composeRule.onNodeWithText("llm.run.started").performClick()
         composeRule.onNodeWithText("\"future\": {", substring = true).assertIsDisplayed()
         composeRule.onNodeWithText("\"kept\": true", substring = true).assertIsDisplayed()
+    }
+
+    @Test
+    fun causationArrowOpensResolvedEventAndDescribesMissingEvent() {
+        val cause =
+            SessionEvent.fromJson(
+                Json.parseToJsonElement(
+                        """{"id":1,"name":"llm.run.requested","payload":{"request":"cause"}}"""
+                    )
+                    .jsonObject
+            )
+        val effect =
+            SessionEvent.fromJson(
+                Json.parseToJsonElement(
+                        """{"id":2,"name":"llm.run.started","causation_id":1,"payload":{}}"""
+                    )
+                    .jsonObject
+            )
+        val unresolved =
+            SessionEvent.fromJson(
+                Json.parseToJsonElement(
+                        """{"id":3,"name":"llm.delta","causation_id":99,"payload":{}}"""
+                    )
+                    .jsonObject
+            )
+        var opened: SessionEvent? = null
+        composeRule.activityRule.scenario.onActivity { activity ->
+            activity.setContent {
+                MaterialTheme {
+                    SessionEventsScreen(
+                        session = HarnessSession("sess_1", "Demo"),
+                        events = listOf(cause, effect, unresolved),
+                        loading = false,
+                        error = null,
+                        onLoad = {},
+                        onRetry = {},
+                        onOpenEvent = { opened = it },
+                        onDismiss = {},
+                    )
+                }
+            }
+        }
+
+        composeRule
+            .onNodeWithContentDescription(
+                "Caused by llm.run.requested, event 1. Open causation event"
+            )
+            .assertIsEnabled()
+            .performClick()
+        composeRule.runOnIdle { assertEquals(cause, opened) }
+        composeRule.onNodeWithText("Causation event #99 unavailable").assertIsDisplayed()
+        composeRule
+            .onNodeWithContentDescription("Causation event 99 is not available")
+            .assertIsDisplayed()
     }
 
     @Test
