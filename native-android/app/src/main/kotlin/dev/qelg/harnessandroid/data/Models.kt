@@ -28,6 +28,7 @@ data class HarnessSession(
     val actualCostUsd: Double? = null,
     val apiCallCount: Int = 0,
     val cumulativeTokenUsage: CumulativeTokenUsage? = null,
+    val sessionState: HarnessSessionState? = null,
 ) {
     companion object {
         fun fromJson(value: JsonObject): HarnessSession {

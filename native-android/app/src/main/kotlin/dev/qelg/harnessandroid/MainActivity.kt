@@ -228,7 +228,7 @@ private fun SessionPane(
                 val draft = state.drafts[session.id]?.takeIf(String::isNotBlank)
                 val unread = state.unreadCounts[session.id] ?: 0
                 val updated = session.updatedAt?.let(::formatSessionUpdate)
-                val read = isSessionUpdateRead(session, state.readUpdates[session.id])
+                val read = isSessionRead(session, state.readUpdates[session.id])
                 val children = childCounts[session] ?: 0
                 ListItem(
                     headlineContent = { Text(session.title, maxLines = 1) },
@@ -250,6 +250,13 @@ private fun SessionPane(
                                         color = MaterialTheme.colorScheme.tertiary,
                                     )
                                 }
+                            session.sessionState?.let {
+                                Text(
+                                    formatSessionState(it),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.tertiary,
+                                )
+                            }
                             updated?.let {
                                 Text(
                                     "Latest $it",
@@ -278,9 +285,17 @@ private fun SessionPane(
                             }
                             if (unread > 0) {
                                 Badge { Text("$unread unread") }
-                            } else if (updated != null && !read) {
+                            } else if (session.sessionState?.unread == true) {
                                 Badge { Text("Unread") }
-                            } else if (updated != null && read) {
+                            } else if (session.sessionState?.read == "read") {
+                                Text(
+                                    "Read",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            } else if (session.sessionState == null && updated != null && !read) {
+                                Badge { Text("Unread") }
+                            } else if (session.sessionState == null && updated != null && read) {
                                 Text(
                                     "Read",
                                     style = MaterialTheme.typography.labelSmall,
@@ -333,7 +348,7 @@ private fun TreePane(
                 val draft = state.drafts[session.id]?.takeIf(String::isNotBlank)
                 val unread = state.unreadCounts[session.id] ?: 0
                 val updated = session.updatedAt?.let(::formatSessionUpdate)
-                val read = isSessionUpdateRead(session, state.readUpdates[session.id])
+                val read = isSessionRead(session, state.readUpdates[session.id])
                 val children = remember(state.sessions) { childCount(state.sessions, session.id) }
                 val indent = (depth * 24).dp
                 ListItem(
@@ -376,6 +391,13 @@ private fun TreePane(
                                         color = MaterialTheme.colorScheme.tertiary,
                                     )
                                 }
+                                session.sessionState?.let {
+                                    Text(
+                                        formatSessionState(it),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.tertiary,
+                                    )
+                                }
                                 updated?.let {
                                     Text(
                                         "Latest $it",
@@ -396,9 +418,17 @@ private fun TreePane(
                             }
                             if (unread > 0) {
                                 Badge { Text("$unread unread") }
-                            } else if (updated != null && !read) {
+                            } else if (session.sessionState?.unread == true) {
                                 Badge { Text("Unread") }
-                            } else if (updated != null && read) {
+                            } else if (session.sessionState?.read == "read") {
+                                Text(
+                                    "Read",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            } else if (session.sessionState == null && updated != null && !read) {
+                                Badge { Text("Unread") }
+                            } else if (session.sessionState == null && updated != null && read) {
                                 Text(
                                     "Read",
                                     style = MaterialTheme.typography.labelSmall,
@@ -923,7 +953,13 @@ internal fun SessionDetailScreen(
                 }
                 item { HorizontalDivider() }
                 item { SessionProperty("Session ID", session.id) }
-                item { SessionProperty("Status", if (session.active) "Live" else "Inactive") }
+                item {
+                    SessionProperty(
+                        "Status",
+                        session.sessionState?.let(::formatSessionState)
+                            ?: if (session.active) "Live" else "Inactive",
+                    )
+                }
                 session.model?.takeIf(String::isNotBlank)?.let { model ->
                     item { SessionProperty("Model", model) }
                 }

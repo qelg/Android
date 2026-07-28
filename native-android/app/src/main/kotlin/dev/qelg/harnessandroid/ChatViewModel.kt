@@ -319,11 +319,17 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     private suspend fun refreshSessions(api: HarnessClient, version: Long) {
         val result = api.sessions()
         if (client !== api || connectionVersion != version) return
-        val sessions =
+        val baseSessions =
             applySessionModelOverrides(
                 result.map(HarnessSession::fromJson).filter { it.id.isNotBlank() },
                 sessionModelOverrides,
             )
+        // Keep the session list usable against older deployments, while preferring
+        // the server-authoritative state projection whenever it is available.
+        val sessionStates =
+            runCatching { api.sessionStates() }.getOrNull()
+                ?: state.value.sessions.mapNotNull(HarnessSession::sessionState)
+        val sessions = applySessionStates(baseSessions, sessionStates)
         _state.update {
             val selectedSession = sessions.firstOrNull { session -> session.id == it.selectedId }
             val selectedModel =
@@ -885,6 +891,43 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         val current = state.value
         if (!canMarkSessionRead(current.historyLoadedFor, current.selectedId, sessionId)) return
         val session = current.sessions.firstOrNull { it.id == sessionId } ?: return
+        val serverState = session.sessionState
+        if (serverState?.unread == true) {
+            _state.update { ui ->
+                ui.copy(
+                    sessions =
+                        ui.sessions.map {
+                            if (it.id == sessionId)
+                                it.copy(sessionState = serverState.copy(read = "read"))
+                            else it
+                        }
+                )
+            }
+            val api = client
+            val version = connectionVersion
+            if (api != null) {
+                viewModelScope.launch {
+                    runCatching { api.markSessionRead(sessionId) }
+                        .onSuccess { confirmed ->
+                            if (client === api && connectionVersion == version) {
+                                _state.update { ui ->
+                                    ui.copy(
+                                        sessions =
+                                            ui.sessions.map {
+                                                if (it.id == sessionId)
+                                                    it.copy(sessionState = confirmed)
+                                                else it
+                                            }
+                                    )
+                                }
+                            }
+                        }
+                        .onFailure {
+                            if (client === api && connectionVersion == version) scheduleRefresh()
+                        }
+                }
+            }
+        }
         val readAt = confirmedReadAt(session)
         readStateStore.save(draftNamespace, sessionId, readAt)
         _state.update {
