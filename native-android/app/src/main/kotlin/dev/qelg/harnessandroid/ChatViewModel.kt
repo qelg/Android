@@ -17,6 +17,13 @@ import kotlinx.serialization.json.*
 
 @JvmInline value class ErrorMessage(val text: String)
 
+data class VoiceMessageTarget(
+    val storedSessionId: String,
+    val runtimeSessionId: String,
+    val model: String?,
+    val connectionVersion: Long,
+)
+
 internal fun dispatchClose(
     closeable: Closeable?,
     dispatcher: CoroutineDispatcher = Dispatchers.IO,
@@ -69,7 +76,9 @@ data class ChatUiState(
     val historyLoadedFor: String? = null,
     val title: String = "Harness Android",
     val items: List<ChatItem> = emptyList(),
+    val timelines: Map<String, List<ChatItem>> = emptyMap(),
     val active: Boolean = false,
+    val activeSessionIds: Set<String> = emptySet(),
     val modelCatalog: ModelCatalog = ModelCatalog(),
     val modelLoading: Boolean = false,
     val transcribing: Boolean = false,
@@ -86,6 +95,18 @@ data class ChatUiState(
     val sessionEventsLoading: Boolean = false,
     val sessionEventsError: ErrorMessage? = null,
 )
+
+internal fun ChatUiState.timelineFor(sessionId: String): List<ChatItem> =
+    if (selectedId == sessionId) items else timelines[sessionId].orEmpty()
+
+internal fun ChatUiState.withTimeline(sessionId: String, timeline: List<ChatItem>): ChatUiState =
+    copy(
+        items = if (selectedId == sessionId) timeline else items,
+        timelines = timelines + (sessionId to timeline),
+    )
+
+internal fun ChatUiState.withCurrentItems(timeline: List<ChatItem>): ChatUiState =
+    selectedId?.let { withTimeline(it, timeline) } ?: copy(items = timeline)
 
 class ChatViewModel(application: Application, private val savedState: SavedStateHandle) :
     AndroidViewModel(application) {
@@ -113,6 +134,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     private var selectionJob: Job? = null
     private var refreshJob: Job? = null
     private var usageJob: Job? = null
+    private val backgroundSessionJobs = mutableMapOf<String, Job>()
     private var connectionVersion = 0L
     private var selectionVersion = 0L
     private var historyRequestVersion = 0L
@@ -146,6 +168,8 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         selectionJob?.cancel()
         refreshJob?.cancel()
         usageJob?.cancel()
+        backgroundSessionJobs.values.forEach(Job::cancel)
+        backgroundSessionJobs.clear()
         dispatchClose(client)
         runtimeId = null
         usageStoredId = null
@@ -164,6 +188,8 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 readUpdates = readUpdates,
                 historyLoadedFor = null,
                 items = emptyList(),
+                timelines = emptyMap(),
+                activeSessionIds = emptySet(),
                 approval = null,
                 clarify = null,
                 active = false,
@@ -208,6 +234,8 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         selectionJob?.cancel()
         refreshJob?.cancel()
         usageJob?.cancel()
+        backgroundSessionJobs.values.forEach(Job::cancel)
+        backgroundSessionJobs.clear()
         connectionVersion++
         selectionVersion++
         dispatchClose(client)
@@ -235,12 +263,14 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     fun hideTree() = _state.update { it.copy(treeParentId = null) }
 
     fun dismissChat() {
+        monitorCurrentSessionIfActive()
         client?.stopWatching()
         runtimeId = null
         _state.update { it.copy(selectedId = null, treeParentId = null) }
     }
 
     fun backFromChat() {
+        monitorCurrentSessionIfActive()
         client?.stopWatching()
         runtimeId = null
         _state.update {
@@ -303,6 +333,14 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             it.copy(
                 sessions = sessions,
                 unreadCounts = remapUnread(it.unreadCounts, sessions),
+                activeSessionIds =
+                    sessions.filter(HarnessSession::active).mapTo(mutableSetOf()) { session ->
+                        session.id
+                    },
+                active =
+                    it.selectedId?.let { id ->
+                        sessions.firstOrNull { session -> session.id == id }?.active
+                    } ?: false,
                 connecting = false,
                 modelCatalog =
                     if (selectedSession != null) it.modelCatalog.selectedFor(selectedModel)
@@ -416,7 +454,9 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                         val items = reconcileHistoryItems(history, it.items, baseline)
                         if (items === it.items)
                             it.copy(connecting = false, historyLoadedFor = storedId)
-                        else it.copy(items = items, connecting = false, historyLoadedFor = storedId)
+                        else
+                            it.withCurrentItems(items)
+                                .copy(connecting = false, historyLoadedFor = storedId)
                     }
                 }
                 .onFailure {
@@ -451,6 +491,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                             selectedId = stored,
                             title = session.title,
                             items = emptyList(),
+                            timelines = it.timelines + (stored to emptyList()),
                             historyLoadedFor = stored,
                             approval = null,
                             clarify = null,
@@ -470,8 +511,10 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     }
 
     fun select(session: HarnessSession, selectedFromTree: Boolean = false) {
-        if (state.value.active || state.value.connecting) return
+        if (state.value.connecting) return
         val api = client ?: return
+        monitorCurrentSessionIfActive()
+        backgroundSessionJobs.remove(session.id)?.cancel()
         selectionJob?.cancel()
         usageJob?.cancel()
         val version = ++selectionVersion
@@ -485,11 +528,11 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 selectedId = session.id,
                 title = session.title,
                 connecting = true,
-                items = if (keepTimeline) it.items else emptyList(),
+                items = if (keepTimeline) it.items else it.timelineFor(session.id),
                 historyLoadedFor = null,
                 approval = null,
                 clarify = null,
-                active = false,
+                active = session.id in it.activeSessionIds || session.active,
                 error = null,
                 reconnectSeconds = null,
                 tokenUsage = initialTokenUsage(session),
@@ -527,12 +570,12 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                             return@runCatching
                         _state.update {
                             val items = reconcileHistoryItems(history, it.items, baseline)
-                            it.copy(
-                                items = items,
-                                connecting = false,
-                                historyLoadedFor = session.id,
-                                modelCatalog = it.modelCatalog.selectedFor(selectedModel),
-                            )
+                            it.withCurrentItems(items)
+                                .copy(
+                                    connecting = false,
+                                    historyLoadedFor = session.id,
+                                    modelCatalog = it.modelCatalog.selectedFor(selectedModel),
+                                )
                         }
                         api.watchSession(session.id, historyRows.latestEventId())
                         refreshTokenUsage()
@@ -597,64 +640,47 @@ class ChatViewModel(application: Application, private val savedState: SavedState
 
     fun send(text: String) {
         val clean = text.trim()
-        if (clean.isEmpty() || state.value.active || state.value.connecting) return
-        val storedId = state.value.selectedId ?: return
-        val model = state.value.modelCatalog.selected?.model
+        val current = state.value
+        if (clean.isEmpty() || current.active || current.connecting) return
+        val storedId = current.selectedId ?: return
+        val targetRuntimeId = runtimeId ?: storedId
+        val model = current.modelCatalog.selected?.model
         val submittedDraft = captureDraftSubmission(storedId, text)
-        _state.update { it.copy(active = true, error = null) }
-        viewModelScope.launch {
-            runCatching {
-                    if (runtimeId == null) createAndAwait()
-                    val id = runtimeId ?: error("Harness returned no session ID")
-                    _state.update {
-                        it.copy(
-                            items =
-                                it.items +
-                                    ChatItem.Message(
-                                        "user",
-                                        clean,
-                                        timestamp = Instant.now(),
-                                        uiKey = "live:${++liveMessageSequence}",
-                                        pendingCanonical = true,
-                                    )
-                        )
-                    }
-                    client?.submit(id, clean, model) ?: error("Not connected")
-                }
-                .onSuccess { submittedDraft?.let(::clearDraft) }
-                .onFailure {
-                    val now = Instant.now()
-                    _state.update { s ->
-                        s.copy(
-                            items = cancelRunningTools(s.items, now),
-                            active = false,
-                            approval = null,
-                            clarify = null,
-                        )
-                    }
-                    showError(it)
-                }
-        }
-    }
-
-    private suspend fun createAndAwait() {
-        val selection = state.value.modelCatalog.selected
-        val result = client?.createSession(selection?.model) ?: return
-        runtimeId = result.string("id")
-        val stored = runtimeId
-        if (runtimeId != null && stored != null) runtimeToStored[runtimeId!!] = stored
-        savedState["selectedId"] = stored
-        _state.update {
-            it.copy(
-                selectedId = stored,
-                title = "Untitled session",
-                items = emptyList(),
-                historyLoadedFor = stored,
-                approval = null,
-                clarify = null,
+        val pending =
+            ChatItem.Message(
+                "user",
+                clean,
+                timestamp = Instant.now(),
+                uiKey = "live:${++liveMessageSequence}",
+                pendingCanonical = true,
             )
+        _state.update {
+            val timeline = it.timelineFor(storedId) + pending
+            it.withTimeline(storedId, timeline)
+                .copy(
+                    active = if (it.selectedId == storedId) true else it.active,
+                    activeSessionIds = it.activeSessionIds + storedId,
+                    error = null,
+                )
         }
-        if (stored != null) client?.watchSession(stored)
+        viewModelScope.launch {
+            runCatching { client?.submit(targetRuntimeId, clean, model) ?: error("Not connected") }
+                .onSuccess { submittedDraft?.let(::clearDraft) }
+                .onFailure { error ->
+                    val now = Instant.now()
+                    _state.update {
+                        val timeline = cancelRunningTools(it.timelineFor(storedId), now)
+                        it.withTimeline(storedId, timeline)
+                            .copy(
+                                active = if (it.selectedId == storedId) false else it.active,
+                                activeSessionIds = it.activeSessionIds - storedId,
+                                approval = null,
+                                clarify = null,
+                            )
+                    }
+                    showError(error)
+                }
+        }
     }
 
     fun interrupt() =
@@ -681,7 +707,18 @@ class ChatViewModel(application: Application, private val savedState: SavedState
 
     fun isWhisperModelDownloaded(model: WhisperModel): Boolean = localWhisper.isDownloaded(model)
 
-    fun transcribe(samples: FloatArray, onResult: (Result<String>) -> Unit) =
+    fun currentVoiceMessageTarget(): VoiceMessageTarget? {
+        val current = state.value
+        val stored = current.selectedId ?: return null
+        return VoiceMessageTarget(
+            storedSessionId = stored,
+            runtimeSessionId = runtimeId ?: stored,
+            model = current.modelCatalog.selected?.model,
+            connectionVersion = connectionVersion,
+        )
+    }
+
+    fun transcribeAndSend(samples: FloatArray, target: VoiceMessageTarget) =
         viewModelScope.launch {
             val model = state.value.whisperModel
             val result =
@@ -701,9 +738,141 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                         }
                     },
                 )
-            result.onFailure(::showError)
-            onResult(result)
+            result.onSuccess { sendVoiceMessage(target, it) }.onFailure(::showError)
         }
+
+    private fun sendVoiceMessage(target: VoiceMessageTarget, text: String) {
+        val clean = text.trim()
+        if (clean.isEmpty()) return
+        if (target.connectionVersion != connectionVersion) {
+            showError(
+                IllegalStateException("Connection changed before the voice message was ready")
+            )
+            return
+        }
+        val current = state.value
+        if (target.storedSessionId in current.activeSessionIds) {
+            showError(IllegalStateException("That session is already processing a message"))
+            return
+        }
+        if (current.selectedId == target.storedSessionId && !current.connecting) {
+            send(clean)
+            return
+        }
+        val api = client
+        if (api == null) {
+            showError(IllegalStateException("Not connected"))
+            return
+        }
+        val pending =
+            ChatItem.Message(
+                "user",
+                clean,
+                timestamp = Instant.now(),
+                uiKey = "live:${++liveMessageSequence}",
+                pendingCanonical = true,
+            )
+        _state.update {
+            val timeline = it.timelineFor(target.storedSessionId) + pending
+            it.withTimeline(target.storedSessionId, timeline)
+                .copy(
+                    activeSessionIds = it.activeSessionIds + target.storedSessionId,
+                    active = if (it.selectedId == target.storedSessionId) true else it.active,
+                )
+        }
+        viewModelScope.launch {
+            runCatching { api.submit(target.runtimeSessionId, clean, target.model) }
+                .onSuccess {
+                    monitorBackgroundSession(api, target.storedSessionId, target.connectionVersion)
+                    scheduleRefresh()
+                }
+                .onFailure { error ->
+                    val now = Instant.now()
+                    _state.update {
+                        val timeline =
+                            cancelRunningTools(it.timelineFor(target.storedSessionId), now)
+                        it.withTimeline(target.storedSessionId, timeline)
+                            .copy(
+                                activeSessionIds = it.activeSessionIds - target.storedSessionId,
+                                active =
+                                    if (it.selectedId == target.storedSessionId) false
+                                    else it.active,
+                            )
+                    }
+                    showError(error)
+                }
+        }
+    }
+
+    private fun monitorCurrentSessionIfActive() {
+        val current = state.value
+        val stored = current.selectedId ?: return
+        val api = client ?: return
+        if (!current.active && stored !in current.activeSessionIds) return
+        monitorBackgroundSession(api, stored, connectionVersion)
+    }
+
+    private fun monitorBackgroundSession(
+        api: HarnessClient,
+        storedSessionId: String,
+        expectedConnectionVersion: Long,
+    ) {
+        backgroundSessionJobs.remove(storedSessionId)?.cancel()
+        backgroundSessionJobs[storedSessionId] =
+            viewModelScope.launch {
+                try {
+                    repeat(300) {
+                        delay(1_000)
+                        if (
+                            client !== api ||
+                                connectionVersion != expectedConnectionVersion ||
+                                state.value.selectedId == storedSessionId
+                        )
+                            return@launch
+                        val sessions = runCatching { api.sessions() }.getOrNull() ?: return@repeat
+                        val session =
+                            sessions.map(HarnessSession::fromJson).firstOrNull {
+                                it.id == storedSessionId
+                            }
+                        if (session == null || session.active) return@repeat
+                        val historyRows =
+                            runCatching { api.history(storedSessionId) }.getOrNull()
+                                ?: return@repeat
+                        val history = messagesFromHistoryRows(historyRows)
+                        if (
+                            client !== api ||
+                                connectionVersion != expectedConnectionVersion ||
+                                state.value.selectedId == storedSessionId
+                        )
+                            return@launch
+                        _state.update {
+                            val existing = it.timelineFor(storedSessionId)
+                            val timeline = reconcileHistoryItems(history, existing, existing)
+                            it.withTimeline(storedSessionId, timeline)
+                                .copy(activeSessionIds = it.activeSessionIds - storedSessionId)
+                        }
+                        incrementUnread(storedSessionId)
+                        refreshSessions(api, expectedConnectionVersion)
+                        return@launch
+                    }
+                } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    if (client === api && connectionVersion == expectedConnectionVersion) {
+                        _state.update {
+                            it.copy(activeSessionIds = it.activeSessionIds - storedSessionId)
+                        }
+                    }
+                } finally {
+                    if (
+                        backgroundSessionJobs[storedSessionId] ===
+                            kotlinx.coroutines.currentCoroutineContext()[Job]
+                    ) {
+                        backgroundSessionJobs.remove(storedSessionId)
+                    }
+                }
+            }
+    }
 
     fun reportError(error: Throwable) = showError(error)
 
@@ -784,12 +953,24 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     private fun handleEvent(event: GatewayEvent) {
         val current = runtimeId
         if (event.sessionId != null && event.sessionId != current) {
+            val stored = storedSessionId(event)
+            when (event.type) {
+                "session.active" ->
+                    stored?.let { id ->
+                        _state.update { it.copy(activeSessionIds = it.activeSessionIds + id) }
+                    }
+                "session.inactive",
+                "message.complete" ->
+                    stored?.let { id ->
+                        _state.update { it.copy(activeSessionIds = it.activeSessionIds - id) }
+                    }
+            }
             if (
                 event.type in
                     setOf("session.active", "session.inactive", "message.delta", "message.complete")
             )
                 scheduleRefresh()
-            if (event.type == "message.complete") incrementUnread(storedSessionId(event))
+            if (event.type == "message.complete") incrementUnread(stored)
             return
         }
         when (event.type) {
@@ -807,12 +988,15 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             "session.inactive" -> {
                 val now = Instant.now()
                 _state.update {
-                    it.copy(
-                        items = cancelRunningTools(it.items, now),
-                        active = false,
-                        approval = null,
-                        clarify = null,
-                    )
+                    it.withCurrentItems(cancelRunningTools(it.items, now))
+                        .copy(
+                            active = false,
+                            activeSessionIds =
+                                it.selectedId?.let { id -> it.activeSessionIds - id }
+                                    ?: it.activeSessionIds,
+                            approval = null,
+                            clarify = null,
+                        )
                 }
                 scheduleRefresh()
                 reloadHistory()
@@ -885,19 +1069,23 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                         event.payload[it]?.jsonPrimitive?.contentOrNull
                     }
                 _state.update {
-                    it.copy(
-                        items =
+                    it.withCurrentItems(
                             reconcileAssistantCompletion(
                                 it.items,
                                 text,
                                 timestamp,
                                 "live:${++liveMessageSequence}",
                                 messageId,
-                            ),
-                        active = false,
-                        approval = null,
-                        clarify = null,
-                    )
+                            )
+                        )
+                        .copy(
+                            active = false,
+                            activeSessionIds =
+                                it.selectedId?.let { id -> it.activeSessionIds - id }
+                                    ?: it.activeSessionIds,
+                            approval = null,
+                            clarify = null,
+                        )
                 }
                 incrementUnread(state.value.selectedId)
                 scheduleRefresh()
@@ -961,7 +1149,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                         durationMs = event.payload["duration_ms"]?.jsonPrimitive?.longOrNull,
                         batchId = batchId,
                     )
-                _state.update { it.copy(items = upsertTool(it.items, tool)) }
+                _state.update { it.withCurrentItems(upsertTool(it.items, tool)) }
             }
             "approval.request" ->
                 current?.let { id ->
@@ -1038,7 +1226,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                         uiKey = "live:${++liveMessageSequence}",
                         pendingCanonical = true,
                     )
-            state.copy(items = items)
+            state.withCurrentItems(items)
         }
     }
 
@@ -1066,6 +1254,8 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         }
 
     override fun onCleared() {
+        backgroundSessionJobs.values.forEach(Job::cancel)
+        backgroundSessionJobs.clear()
         dispatchClose(localWhisper)
         dispatchClose(client)
         client = null

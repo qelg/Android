@@ -370,4 +370,35 @@ class TimelineStateTest {
         assertNotNull(request)
         assertEquals(listOf("a", "b", "c", "d"), request!!.choices)
     }
+
+    @Test
+    fun timelinesRemainScopedWhenSwitchingChats() {
+        val firstMessage = ChatItem.Message("user", "first chat")
+        val secondMessage = ChatItem.Message("assistant", "second chat")
+        val first =
+            ChatUiState(selectedId = "one")
+                .withCurrentItems(listOf(firstMessage))
+                .withTimeline("two", listOf(secondMessage))
+
+        assertEquals(listOf(firstMessage), first.items)
+        assertEquals(listOf(firstMessage), first.timelineFor("one"))
+        assertEquals(listOf(secondMessage), first.timelineFor("two"))
+
+        val switched = first.copy(selectedId = "two", items = first.timelineFor("two"))
+        assertEquals(listOf(secondMessage), switched.items)
+        assertEquals(listOf(firstMessage), switched.timelineFor("one"))
+    }
+
+    @Test
+    fun backgroundTimelineUpdatesDoNotReplaceTheOpenChat() {
+        val openMessage = ChatItem.Message("user", "open")
+        val backgroundMessage = ChatItem.Message("user", "background")
+        val state =
+            ChatUiState(selectedId = "open")
+                .withCurrentItems(listOf(openMessage))
+                .withTimeline("background", listOf(backgroundMessage))
+
+        assertEquals(listOf(openMessage), state.items)
+        assertEquals(listOf(backgroundMessage), state.timelineFor("background"))
+    }
 }
