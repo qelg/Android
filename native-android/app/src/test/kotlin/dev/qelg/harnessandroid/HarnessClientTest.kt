@@ -86,14 +86,32 @@ class HarnessClientTest {
         server(
             MockResponse().setBody("""{"providers":["chatgpt-codex"]}"""),
             MockResponse()
-                .setBody("""{"provider":"chatgpt-codex","model":"terra","scope":"session"}"""),
+                .setBody(
+                    """{"provider":"chatgpt-codex","model":"gpt-5.6-terra","scope":"session"}"""
+                ),
         ) { client, _ ->
             val catalog = client.modelOptions("sess_1")
             assertEquals(
-                listOf("gpt-5.6-sol", "terra", "luna"),
+                listOf("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"),
                 catalog.providers.single().models.map { it.id },
             )
-            assertEquals(ModelSelection("chatgpt-codex", "terra"), catalog.selected)
+            assertEquals(ModelSelection("chatgpt-codex", "gpt-5.6-terra"), catalog.selected)
+        }
+    }
+
+    @Test
+    fun openRouterOffersConfiguredModels() = runBlocking {
+        server(MockResponse().setBody("""{"providers":["openrouter"]}""")) { client, _ ->
+            val catalog = client.modelOptions()
+            assertEquals(
+                listOf(
+                    "openai/gpt-4o-mini",
+                    "deepseek/deepseek-v4-flash",
+                    "qwen/qwen3.6-35b-a3b",
+                    "moonshotai/kimi-k3",
+                ),
+                catalog.providers.single().models.map { it.id },
+            )
         }
     }
 
