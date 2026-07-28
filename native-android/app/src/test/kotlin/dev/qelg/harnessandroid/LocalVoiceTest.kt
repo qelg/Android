@@ -23,13 +23,4 @@ class LocalVoiceTest {
         assertEquals("32 MB", WhisperModel.Tiny.downloadSize)
         assertEquals("574 MB", WhisperModel.LargeTurbo.downloadSize)
     }
-
-    @Test
-    fun transcriptIsAppendedToTheEditableDraft() {
-        assertEquals(
-            "existing text spoken text",
-            appendTranscript("existing text ", " spoken text "),
-        )
-        assertEquals("spoken text", appendTranscript("", " spoken text "))
-    }
 }

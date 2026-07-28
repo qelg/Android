@@ -680,7 +680,7 @@ private fun ChatPane(
                     vm,
                     enabled = !state.transcribing && !state.connecting && !state.active,
                 ) { text ->
-                    vm.setDraft(appendTranscript(input, text))
+                    vm.send(text)
                 }
                 OutlinedTextField(
                     input,
@@ -1965,9 +1965,6 @@ private fun WhisperModelDialog(
         confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
     )
 }
-
-internal fun appendTranscript(draft: String, transcript: String): String =
-    listOf(draft.trimEnd(), transcript.trim()).filter(String::isNotBlank).joinToString(" ")
 
 @Composable
 private fun VoiceButton(vm: ChatViewModel, enabled: Boolean, onText: (String) -> Unit) {
