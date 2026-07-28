@@ -1477,4 +1477,3 @@ void ggml_vec_dot_q6_K_q8_K(int n, float * GGML_RESTRICT s, size_t bs, const voi
     *s = sumf;
 #endif
 }
-
