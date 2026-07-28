@@ -105,6 +105,16 @@ class HarnessClient(
     suspend fun sessions(): List<JsonObject> =
         request("GET", "/sessions").jsonArray.mapNotNull { it as? JsonObject }
 
+    suspend fun sessionStates(): List<HarnessSessionState> =
+        request("GET", "/session-states").jsonArray.mapNotNull {
+            (it as? JsonObject)?.let(HarnessSessionState::fromJson)
+        }
+
+    suspend fun markSessionRead(sessionId: String): HarnessSessionState =
+        HarnessSessionState.fromJson(
+            request("POST", "/sessions/${sessionId.urlEncode()}/state/read").jsonObject
+        )
+
     suspend fun createSession(model: String? = null): JsonObject {
         val session =
             request(

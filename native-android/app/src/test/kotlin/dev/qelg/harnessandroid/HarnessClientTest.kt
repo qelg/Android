@@ -49,6 +49,29 @@ class HarnessClientTest {
     }
 
     @Test
+    fun listsAndMarksServerSessionStates() = runBlocking {
+        server(
+            MockResponse()
+                .setBody(
+                    """[{"session_id":"sess_1","state":"finished","read":"unread","outcome":"stop","event_id":12,"created_at_ms":1752757200123}]"""
+                ),
+            MockResponse()
+                .setBody(
+                    """{"session_id":"sess_1","state":"finished","read":"read","outcome":"stop","event_id":13,"created_at_ms":1752757201123}"""
+                ),
+        ) { client, server ->
+            val unread = client.sessionStates().single()
+            val read = client.markSessionRead("session with space")
+
+            assertTrue(unread.unread)
+            assertEquals("stop", unread.outcome)
+            assertEquals("read", read.read)
+            assertEquals("/session-states", server.takeRequest().path)
+            assertEquals("/sessions/session+with+space/state/read", server.takeRequest().path)
+        }
+    }
+
+    @Test
     fun createsSessionAndSelectsModel() = runBlocking {
         server(MockResponse().setBody("""{"id":"sess_1"}"""), MockResponse().setBody("{}")) { c, s
             ->
