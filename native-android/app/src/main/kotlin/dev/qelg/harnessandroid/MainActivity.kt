@@ -676,12 +676,7 @@ private fun ChatPane(
                 }
             }
             Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
-                VoiceButton(
-                    vm,
-                    enabled = !state.transcribing && !state.connecting && !state.active,
-                ) { text ->
-                    vm.send(text)
-                }
+                VoiceButton(vm, enabled = !state.transcribing && !state.connecting && !state.active)
                 OutlinedTextField(
                     input,
                     vm::setDraft,
@@ -1966,20 +1961,25 @@ private fun WhisperModelDialog(
     )
 }
 
+private data class VoiceRecording(val recorder: LocalAudioRecorder, val target: VoiceMessageTarget)
+
 @Composable
-private fun VoiceButton(vm: ChatViewModel, enabled: Boolean, onText: (String) -> Unit) {
+private fun VoiceButton(vm: ChatViewModel, enabled: Boolean) {
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
-    var recorder by remember { mutableStateOf<LocalAudioRecorder?>(null) }
+    var recording by remember { mutableStateOf<VoiceRecording?>(null) }
+    var pendingTarget by remember { mutableStateOf<VoiceMessageTarget?>(null) }
 
     fun discardRecording() {
-        recorder?.discard()
-        recorder = null
+        recording?.recorder?.discard()
+        recording = null
+        pendingTarget = null
     }
 
-    fun start() {
+    fun start(target: VoiceMessageTarget) {
+        pendingTarget = null
         runCatching { LocalAudioRecorder().also { it.start() } }
-            .onSuccess { recorder = it }
+            .onSuccess { recording = VoiceRecording(it, target) }
             .onFailure {
                 discardRecording()
                 vm.reportError(IllegalStateException("Could not start voice recording", it))
@@ -1988,30 +1988,40 @@ private fun VoiceButton(vm: ChatViewModel, enabled: Boolean, onText: (String) ->
 
     val permission =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-            if (granted) start()
-            else vm.reportError(IllegalStateException("Microphone permission is required"))
+            val target = pendingTarget
+            pendingTarget = null
+            if (granted && target != null) start(target)
+            else if (!granted)
+                vm.reportError(IllegalStateException("Microphone permission is required"))
         }
     IconButton(
         onClick = {
-            val active = recorder
+            val active = recording
             if (active == null) {
+                val target = vm.currentVoiceMessageTarget()
+                if (target == null) {
+                    vm.reportError(IllegalStateException("No session selected"))
+                    return@IconButton
+                }
+                pendingTarget = target
                 permission.launch(Manifest.permission.RECORD_AUDIO)
             } else {
-                recorder = null
+                recording = null
                 scope.launch {
-                    runCatching { active.stop() }
-                        .onSuccess { samples -> vm.transcribe(samples) { it.onSuccess(onText) } }
+                    runCatching { active.recorder.stop() }
+                        .onSuccess { samples -> vm.transcribeAndSend(samples, active.target) }
                         .onFailure(vm::reportError)
                 }
             }
         },
-        enabled = enabled || recorder != null,
+        enabled = enabled || recording != null,
     ) {
         Icon(
-            if (recorder == null) Icons.Default.Mic else Icons.Default.Stop,
-            if (recorder == null) "Record with local Whisper" else "Stop recording",
+            if (recording == null) Icons.Default.Mic else Icons.Default.Stop,
+            if (recording == null) "Record with local Whisper" else "Stop recording",
             tint =
-                if (recorder == null) LocalContentColor.current else MaterialTheme.colorScheme.error,
+                if (recording == null) LocalContentColor.current
+                else MaterialTheme.colorScheme.error,
         )
     }
     DisposableEffect(lifecycleOwner) {
