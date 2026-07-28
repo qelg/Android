@@ -79,6 +79,10 @@ data class ChatUiState(
     val reconnectSeconds: Int? = null,
     val updateState: UpdateState = UpdateState(),
     val tokenUsage: TokenUsageState? = null,
+    val sessionEvents: List<SessionEvent> = emptyList(),
+    val sessionEventsFor: String? = null,
+    val sessionEventsLoading: Boolean = false,
+    val sessionEventsError: ErrorMessage? = null,
 )
 
 class ChatViewModel(application: Application, private val savedState: SavedStateHandle) :
@@ -482,6 +486,11 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 tokenUsage = initialTokenUsage(session),
                 modelCatalog = modelCatalogForSession(it.modelCatalog, session),
                 treeParentId = treeParentAfterSelection(it.treeParentId, selectedFromTree),
+                sessionEvents =
+                    if (it.sessionEventsFor == session.id) it.sessionEvents else emptyList(),
+                sessionEventsFor = if (it.sessionEventsFor == session.id) session.id else null,
+                sessionEventsLoading = false,
+                sessionEventsError = null,
             )
         }
         selectionJob =
@@ -521,6 +530,60 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                     }
                     .onFailure { if (selectionVersion == version && client === api) showError(it) }
             }
+    }
+
+    fun loadSessionEvents(force: Boolean = false) {
+        val api = client ?: return
+        val sessionId = state.value.selectedId ?: return
+        val current = state.value
+        if (!force && current.sessionEventsFor == sessionId && current.sessionEventsError == null)
+            return
+        _state.update {
+            it.copy(
+                sessionEventsLoading = true,
+                sessionEventsError = null,
+                sessionEvents =
+                    if (it.sessionEventsFor == sessionId) it.sessionEvents else emptyList(),
+            )
+        }
+        val version = selectionVersion
+        viewModelScope.launch {
+            runCatching { api.sessionEvents(sessionId) }
+                .onSuccess { events ->
+                    if (
+                        client === api &&
+                            selectionVersion == version &&
+                            state.value.selectedId == sessionId
+                    ) {
+                        _state.update {
+                            it.copy(
+                                sessionEvents = events,
+                                sessionEventsFor = sessionId,
+                                sessionEventsLoading = false,
+                                sessionEventsError = null,
+                            )
+                        }
+                    }
+                }
+                .onFailure { error ->
+                    if (
+                        client === api &&
+                            selectionVersion == version &&
+                            state.value.selectedId == sessionId
+                    ) {
+                        _state.update {
+                            it.copy(
+                                sessionEventsFor = sessionId,
+                                sessionEventsLoading = false,
+                                sessionEventsError =
+                                    ErrorMessage(
+                                        error.message ?: "Session events could not be loaded"
+                                    ),
+                            )
+                        }
+                    }
+                }
+        }
     }
 
     fun send(text: String) {

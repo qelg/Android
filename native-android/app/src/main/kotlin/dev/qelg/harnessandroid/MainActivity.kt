@@ -428,6 +428,8 @@ private fun ChatPane(
     var showModels by rememberSaveable(state.selectedId) { mutableStateOf(false) }
     var showUsageDetails by rememberSaveable(state.selectedId) { mutableStateOf(false) }
     var fullScreenDetail by remember(state.selectedId) { mutableStateOf<FullScreenDetail?>(null) }
+    var sessionDetail by remember(state.selectedId) { mutableStateOf<SessionDetailPage?>(null) }
+    val selectedSession = state.sessions.firstOrNull { it.id == state.selectedId }
     val blocks = remember(state.items) { groupTimeline(state.items) }
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -468,9 +470,21 @@ private fun ChatPane(
             state.selectedId?.let(vm::markRead)
         }
     }
+    BackHandler(enabled = sessionDetail != null) {
+        sessionDetail =
+            when (sessionDetail) {
+                is SessionDetailPage.EventPayload -> SessionDetailPage.Events
+                SessionDetailPage.Events -> SessionDetailPage.Overview
+                SessionDetailPage.Overview -> null
+                null -> null
+            }
+    }
     Box(modifier) {
         Column(
-            Modifier.fillMaxSize().fullScreenDetailBackground(active = fullScreenDetail != null)
+            Modifier.fillMaxSize()
+                .fullScreenDetailBackground(
+                    active = fullScreenDetail != null || sessionDetail != null
+                )
         ) {
             TopAppBar(
                 navigationIcon = {
@@ -479,7 +493,15 @@ private fun ChatPane(
                     }
                 },
                 title = {
-                    Column {
+                    Column(
+                        Modifier.clickable(
+                            enabled = selectedSession != null,
+                            onClickLabel = "Open session details",
+                            role = Role.Button,
+                        ) {
+                            sessionDetail = SessionDetailPage.Overview
+                        }
+                    ) {
                         Text(state.title, maxLines = 1)
                         state.modelCatalog.selected?.let {
                             Text(
@@ -685,6 +707,42 @@ private fun ChatPane(
                 )
             null -> Unit
         }
+        when (val detail = sessionDetail) {
+            SessionDetailPage.Overview ->
+                selectedSession?.let { session ->
+                    SessionDetailScreen(
+                        session = session,
+                        eventCount =
+                            state.sessionEvents
+                                .takeIf { state.sessionEventsFor == session.id }
+                                ?.size,
+                        onOpenEvents = { sessionDetail = SessionDetailPage.Events },
+                        onDismiss = { sessionDetail = null },
+                    )
+                }
+            SessionDetailPage.Events ->
+                selectedSession?.let { session ->
+                    SessionEventsScreen(
+                        session = session,
+                        events =
+                            state.sessionEvents
+                                .takeIf { state.sessionEventsFor == session.id }
+                                .orEmpty(),
+                        loading = state.sessionEventsLoading,
+                        error =
+                            state.sessionEventsError.takeIf {
+                                state.sessionEventsFor == session.id
+                            },
+                        onLoad = vm::loadSessionEvents,
+                        onRetry = { vm.loadSessionEvents(force = true) },
+                        onOpenEvent = { sessionDetail = SessionDetailPage.EventPayload(it) },
+                        onDismiss = { sessionDetail = SessionDetailPage.Overview },
+                    )
+                }
+            is SessionDetailPage.EventPayload ->
+                SessionEventPayloadScreen(detail.event) { sessionDetail = SessionDetailPage.Events }
+            null -> Unit
+        }
     }
     if (showModels) {
         ModelPickerDialog(
@@ -806,6 +864,246 @@ private fun ContextUsageBar(usage: TokenUsageState, onClick: () -> Unit) {
         }
     }
 }
+
+private sealed interface SessionDetailPage {
+    data object Overview : SessionDetailPage
+
+    data object Events : SessionDetailPage
+
+    data class EventPayload(val event: SessionEvent) : SessionDetailPage
+}
+
+@Composable
+internal fun SessionDetailScreen(
+    session: HarnessSession,
+    eventCount: Int?,
+    onOpenEvents: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    BackHandler(onBack = onDismiss)
+    FullScreenDetailContainer {
+        Column(Modifier.fillMaxSize()) {
+            DetailHeader(session.title, "Session details", onDismiss)
+            HorizontalDivider()
+            LazyColumn(Modifier.fillMaxSize()) {
+                item {
+                    ListItem(
+                        headlineContent = { Text("Events") },
+                        supportingContent = {
+                            Text(
+                                eventCount?.let {
+                                    "$it low-level ${if (it == 1) "event" else "events"}"
+                                } ?: "Inspect low-level events and JSON payloads"
+                            )
+                        },
+                        leadingContent = { Icon(Icons.Default.DataObject, null) },
+                        trailingContent = {
+                            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null)
+                        },
+                        modifier =
+                            Modifier.fillMaxWidth()
+                                .clickable(
+                                    onClickLabel = "Open session events",
+                                    role = Role.Button,
+                                    onClick = onOpenEvents,
+                                ),
+                    )
+                }
+                item { HorizontalDivider() }
+                item { SessionProperty("Session ID", session.id) }
+                item { SessionProperty("Status", if (session.active) "Live" else "Inactive") }
+                session.model?.takeIf(String::isNotBlank)?.let { model ->
+                    item { SessionProperty("Model", model) }
+                }
+                session.source?.takeIf(String::isNotBlank)?.let { source ->
+                    item { SessionProperty("Source", source) }
+                }
+                session.updatedAt?.let(::formatSessionUpdate)?.let { updated ->
+                    item { SessionProperty("Latest update", updated) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SessionProperty(label: String, value: String) {
+    ListItem(
+        headlineContent = { Text(label) },
+        supportingContent = {
+            SelectionContainer {
+                Text(value, fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+            }
+        },
+    )
+}
+
+@Composable
+internal fun SessionEventsScreen(
+    session: HarnessSession,
+    events: List<SessionEvent>,
+    loading: Boolean,
+    error: ErrorMessage?,
+    onLoad: () -> Unit,
+    onRetry: () -> Unit,
+    onOpenEvent: (SessionEvent) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    LaunchedEffect(session.id) { onLoad() }
+    BackHandler(onBack = onDismiss)
+    FullScreenDetailContainer {
+        Column(Modifier.fillMaxSize()) {
+            DetailHeader(session.title, "Events", onDismiss) {
+                IconButton(onRetry, enabled = !loading) {
+                    Icon(Icons.Default.Refresh, "Refresh events")
+                }
+            }
+            HorizontalDivider()
+            if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            when {
+                error != null && events.isEmpty() ->
+                    Column(
+                        Modifier.fillMaxSize().padding(24.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
+                    ) {
+                        Icon(Icons.Default.ErrorOutline, null)
+                        Spacer(Modifier.height(8.dp))
+                        Text("Events could not be loaded")
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            error.text,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Button(onRetry) { Text("Retry") }
+                    }
+                !loading && events.isEmpty() ->
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            "No events for this session.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                else ->
+                    LazyColumn(Modifier.fillMaxSize()) {
+                        error?.let { currentError ->
+                            item {
+                                Text(
+                                    currentError.text,
+                                    Modifier.fillMaxWidth().padding(12.dp),
+                                    color = MaterialTheme.colorScheme.error,
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                        items(events, key = { it.id ?: it.raw.toString() }) { event ->
+                            ListItem(
+                                headlineContent = { Text(event.displayName) },
+                                supportingContent = {
+                                    Column {
+                                        event.timestamp?.let { Text(formatEventTime(it)) }
+                                        event.originator?.let {
+                                            Text(
+                                                "Originator: $it",
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            )
+                                        }
+                                    }
+                                },
+                                trailingContent = {
+                                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null)
+                                },
+                                modifier =
+                                    Modifier.fillMaxWidth().clickable(
+                                        onClickLabel = "Open ${event.displayName} JSON payload",
+                                        role = Role.Button,
+                                    ) {
+                                        onOpenEvent(event)
+                                    },
+                            )
+                        }
+                    }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun SessionEventPayloadScreen(event: SessionEvent, onDismiss: () -> Unit) {
+    var wrapLines by remember(event.raw) { mutableStateOf(true) }
+    BackHandler(onBack = onDismiss)
+    FullScreenDetailContainer {
+        Column(Modifier.fillMaxSize()) {
+            DetailHeader(event.displayName, event.timestamp?.let(::formatEventTime), onDismiss) {
+                TextButton({ wrapLines = !wrapLines }) {
+                    Text(if (wrapLines) "No wrap" else "Wrap")
+                }
+            }
+            HorizontalDivider()
+            SelectionContainer(Modifier.weight(1f)) {
+                Box(
+                    Modifier.fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .then(
+                            if (wrapLines) Modifier
+                            else Modifier.horizontalScroll(rememberScrollState())
+                        )
+                ) {
+                    Text(
+                        event.prettyJson,
+                        Modifier.then(if (wrapLines) Modifier.fillMaxWidth() else Modifier)
+                            .padding(16.dp),
+                        fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                        softWrap = wrapLines,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailHeader(
+    title: String,
+    subtitle: String?,
+    onDismiss: () -> Unit,
+    actions: @Composable RowScope.() -> Unit = {},
+) {
+    Row(
+        Modifier.fillMaxWidth().padding(end = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        IconButton(onDismiss) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 1)
+            subtitle?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                )
+            }
+        }
+        actions()
+    }
+}
+
+internal fun formatEventTime(
+    timestamp: java.time.Instant,
+    zoneId: java.time.ZoneId = java.time.ZoneId.systemDefault(),
+    locale: java.util.Locale = java.util.Locale.getDefault(),
+): String =
+    java.time.format.DateTimeFormatter.ofLocalizedDateTime(
+            java.time.format.FormatStyle.MEDIUM,
+            java.time.format.FormatStyle.SHORT,
+        )
+        .withLocale(locale)
+        .withZone(zoneId)
+        .format(timestamp)
 
 internal enum class ContextDetailPage {
     SystemPrompt,

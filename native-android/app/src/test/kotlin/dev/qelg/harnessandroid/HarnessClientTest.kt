@@ -32,6 +32,23 @@ class HarnessClientTest {
     }
 
     @Test
+    fun listsCompleteLowLevelSessionEvents() = runBlocking {
+        server(
+            MockResponse()
+                .setBody(
+                    """[{"id":7,"name":"session.created","created_at_ms":1752757200123,"producer":"harness-api","tags":{"session":"sess_1"},"payload":{"title":"Demo","unknown":true}}]"""
+                )
+        ) { client, server ->
+            val event = client.sessionEvents("session with space").single()
+
+            assertEquals("session.created", event.displayName)
+            assertEquals("harness-api", event.originator)
+            assertTrue(event.prettyJson.contains("unknown"))
+            assertEquals("/sessions/session+with+space/events", server.takeRequest().path)
+        }
+    }
+
+    @Test
     fun createsSessionAndSelectsModel() = runBlocking {
         server(MockResponse().setBody("""{"id":"sess_1"}"""), MockResponse().setBody("{}")) { c, s
             ->
