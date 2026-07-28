@@ -86,7 +86,9 @@ class HarnessClientTest {
         server(
             MockResponse().setBody("""{"providers":["chatgpt-codex"]}"""),
             MockResponse()
-                .setBody("""{"provider":"chatgpt-codex","model":"gpt-5.6-terra","scope":"session"}"""),
+                .setBody(
+                    """{"provider":"chatgpt-codex","model":"gpt-5.6-terra","scope":"session"}"""
+                ),
         ) { client, _ ->
             val catalog = client.modelOptions("sess_1")
             assertEquals(
