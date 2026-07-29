@@ -492,7 +492,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         viewModelScope.launch {
             runCatching {
                     val selection = state.value.modelCatalog.selected
-                    val result = api.createSession(selection?.model)
+                    val result = api.createSession(selection)
                     val session = HarnessSession.fromJson(result)
                     runtimeId =
                         session.id.takeIf(String::isNotBlank)

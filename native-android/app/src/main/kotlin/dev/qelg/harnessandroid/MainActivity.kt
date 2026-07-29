@@ -662,7 +662,12 @@ private fun ChatPane(
                         Text(state.title, maxLines = 1)
                         state.modelCatalog.selected?.let {
                             Text(
-                                it.model,
+                                buildString {
+                                    append(it.model)
+                                    it.thinkingLevel?.let { level ->
+                                        append(" · ").append(level.displayName).append(" thinking")
+                                    }
+                                },
                                 maxLines = 1,
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1818,6 +1823,23 @@ private fun ModelPickerDialog(
         },
         text = {
             Column(Modifier.fillMaxWidth()) {
+                Text("Thinking level", style = MaterialTheme.typography.labelLarge)
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    ThinkingLevel.entries.forEach { level ->
+                        FilterChip(
+                            selected = catalog.selected?.thinkingLevel == level,
+                            onClick = {
+                                catalog.selected?.let { onSelect(it.copy(thinkingLevel = level)) }
+                            },
+                            enabled = catalog.selected != null && !loading,
+                            label = { Text(level.displayName) },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
                     search,
                     { search = it },
@@ -1845,7 +1867,12 @@ private fun ModelPickerDialog(
                                 )
                             }
                             items(provider.models, key = { "${provider.slug}/${it.id}" }) { model ->
-                                val selection = ModelSelection(provider.slug, model.id)
+                                val selection =
+                                    ModelSelection(
+                                        provider.slug,
+                                        model.id,
+                                        catalog.selected?.thinkingLevel,
+                                    )
                                 val selected = selection == catalog.selected
                                 ListItem(
                                     headlineContent = { Text(model.id) },

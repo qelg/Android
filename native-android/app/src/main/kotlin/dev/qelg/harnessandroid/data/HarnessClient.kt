@@ -58,7 +58,11 @@ class HarnessClient(
             ModelCatalog(
                 selected =
                     if (!selectedProvider.isNullOrBlank() && !selectedModel.isNullOrBlank())
-                        ModelSelection(selectedProvider, selectedModel)
+                        ModelSelection(
+                            selectedProvider,
+                            selectedModel,
+                            ThinkingLevel.fromApiValue(selected.string("thinking_level")),
+                        )
                     else null,
                 providers =
                     providers.map { provider ->
@@ -88,6 +92,7 @@ class HarnessClient(
                 put("provider", selection.provider)
                 put("model", selection.model)
                 put("session_id", sessionId)
+                selection.thinkingLevel?.let { put("thinking_level", it.apiValue) }
             },
         )
     }
@@ -125,7 +130,7 @@ class HarnessClient(
             request("POST", "/sessions/${sessionId.urlEncode()}/state/archive").jsonObject
         )
 
-    suspend fun createSession(model: String? = null): JsonObject {
+    suspend fun createSession(selection: ModelSelection? = null): JsonObject {
         val session =
             request(
                     "POST",
@@ -137,11 +142,7 @@ class HarnessClient(
                 )
                 .jsonObject
         val id = session.string("id") ?: error("Harness returned no session ID")
-        model?.takeIf(String::isNotBlank)?.let {
-            val provider =
-                MODEL_OPTIONS.entries.firstOrNull { entry -> it in entry.value }?.key ?: "mock-llm"
-            selectModel(id, ModelSelection(provider, it))
-        }
+        selection?.let { selectModel(id, it) }
         return session
     }
 
