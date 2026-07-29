@@ -593,6 +593,14 @@ fun buildSessionTree(sessions: List<HarnessSession>): Map<String, List<HarnessSe
     return byParent
 }
 
+fun mergeSessionsById(
+    existing: List<HarnessSession>,
+    additions: List<HarnessSession>,
+): List<HarnessSession> {
+    val additionsById = additions.associateBy(HarnessSession::id).toMutableMap()
+    return existing.map { additionsById.remove(it.id) ?: it } + additionsById.values
+}
+
 fun directChildSessions(sessions: List<HarnessSession>, sessionId: String): List<HarnessSession> =
     sortSessionsForOverview(sessions.filter { it.parentSessionId == sessionId })
 

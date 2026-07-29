@@ -32,6 +32,19 @@ class HarnessClientTest {
     }
 
     @Test
+    fun listsChildSessions() = runBlocking {
+        server(
+            MockResponse()
+                .setBody("""[{"id":"child_1","title":"Child","parent_session_id":"parent"}]""")
+        ) { client, server ->
+            val child = client.childSessions("parent with space").single()
+
+            assertEquals("child_1", child["id"]?.jsonPrimitive?.content)
+            assertEquals("/sessions/parent+with+space/children", server.takeRequest().path)
+        }
+    }
+
+    @Test
     fun listsCompleteLowLevelSessionEvents() = runBlocking {
         server(
             MockResponse()

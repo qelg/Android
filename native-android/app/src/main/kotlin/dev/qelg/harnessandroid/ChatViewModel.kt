@@ -67,6 +67,9 @@ data class ChatUiState(
     val configured: Boolean = false,
     val connecting: Boolean = false,
     val sessions: List<HarnessSession> = emptyList(),
+    val childSessions: Map<String, List<HarnessSession>> = emptyMap(),
+    val childSessionsLoading: Set<String> = emptySet(),
+    val childSessionsErrors: Map<String, ErrorMessage> = emptyMap(),
     val search: String = "",
     val selectedId: String? = null,
     val treeParentId: String? = null,
@@ -183,6 +186,9 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 configured = true,
                 connecting = true,
                 sessions = emptyList(),
+                childSessions = emptyMap(),
+                childSessionsLoading = emptySet(),
+                childSessionsErrors = emptyMap(),
                 drafts = drafts,
                 unreadCounts = emptyMap(),
                 readUpdates = readUpdates,
@@ -319,9 +325,12 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     private suspend fun refreshSessions(api: HarnessClient, version: Long) {
         val result = api.sessions()
         if (client !== api || connectionVersion != version) return
+        val knownChildren = state.value.childSessions.values.flatten()
         val baseSessions =
             applySessionModelOverrides(
-                result.map(HarnessSession::fromJson).filter { it.id.isNotBlank() },
+                (result.map(HarnessSession::fromJson) + knownChildren)
+                    .filter { it.id.isNotBlank() }
+                    .distinctBy { it.id },
                 sessionModelOverrides,
             )
         // Keep the session list usable against older deployments, while preferring
@@ -588,6 +597,55 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                     }
                     .onFailure { if (selectionVersion == version && client === api) showError(it) }
             }
+    }
+
+    fun loadChildSessions(sessionId: String) {
+        val api = client ?: return
+        val current = state.value
+        if (sessionId in current.childSessions || sessionId in current.childSessionsLoading) return
+        val version = connectionVersion
+        _state.update {
+            it.copy(
+                childSessionsLoading = it.childSessionsLoading + sessionId,
+                childSessionsErrors = it.childSessionsErrors - sessionId,
+            )
+        }
+        viewModelScope.launch {
+            runCatching {
+                    sortSessionsForOverview(
+                        api.childSessions(sessionId).map(HarnessSession::fromJson).filter {
+                            it.id.isNotBlank()
+                        }
+                    )
+                }
+                .onSuccess { children ->
+                    if (client === api && connectionVersion == version) {
+                        _state.update { ui ->
+                            ui.copy(
+                                sessions = mergeSessionsById(ui.sessions, children),
+                                childSessions = ui.childSessions + (sessionId to children),
+                                childSessionsLoading = ui.childSessionsLoading - sessionId,
+                            )
+                        }
+                    }
+                }
+                .onFailure { error ->
+                    if (client === api && connectionVersion == version) {
+                        _state.update {
+                            it.copy(
+                                childSessionsLoading = it.childSessionsLoading - sessionId,
+                                childSessionsErrors =
+                                    it.childSessionsErrors +
+                                        (sessionId to
+                                            ErrorMessage(
+                                                error.message
+                                                    ?: "Child sessions could not be loaded"
+                                            )),
+                            )
+                        }
+                    }
+                }
+        }
     }
 
     fun loadSessionEvents(force: Boolean = false) {
