@@ -563,7 +563,8 @@ private fun ChatPane(
         sessionDetail =
             when (sessionDetail) {
                 is SessionDetailPage.EventPayload -> SessionDetailPage.Events
-                SessionDetailPage.Events -> SessionDetailPage.Overview
+                SessionDetailPage.Events,
+                SessionDetailPage.Children -> SessionDetailPage.Overview
                 SessionDetailPage.Overview -> null
                 null -> null
             }
@@ -798,14 +799,33 @@ private fun ChatPane(
         when (val detail = sessionDetail) {
             SessionDetailPage.Overview ->
                 selectedSession?.let { session ->
+                    val children =
+                        remember(state.sessions, session.id) {
+                            directChildSessions(state.sessions, session.id)
+                        }
                     SessionDetailScreen(
                         session = session,
                         eventCount =
                             state.sessionEvents
                                 .takeIf { state.sessionEventsFor == session.id }
                                 ?.size,
+                        childCount = children.size,
+                        onOpenChildren = { sessionDetail = SessionDetailPage.Children },
                         onOpenEvents = { sessionDetail = SessionDetailPage.Events },
+                        onArchive = { vm.archiveSession(session.id) },
                         onDismiss = { sessionDetail = null },
+                    )
+                }
+            SessionDetailPage.Children ->
+                selectedSession?.let { session ->
+                    SessionChildrenScreen(
+                        session = session,
+                        children = directChildSessions(state.sessions, session.id),
+                        onOpenChild = { child ->
+                            sessionDetail = null
+                            vm.select(child, selectedFromTree = state.treeParentId != null)
+                        },
+                        onDismiss = { sessionDetail = SessionDetailPage.Overview },
                     )
                 }
             SessionDetailPage.Events ->
@@ -964,6 +984,8 @@ private fun ContextUsageBar(usage: TokenUsageState, onClick: () -> Unit) {
 private sealed interface SessionDetailPage {
     data object Overview : SessionDetailPage
 
+    data object Children : SessionDetailPage
+
     data object Events : SessionDetailPage
 
     data class EventPayload(val event: SessionEvent) : SessionDetailPage
@@ -973,15 +995,51 @@ private sealed interface SessionDetailPage {
 internal fun SessionDetailScreen(
     session: HarnessSession,
     eventCount: Int?,
+    childCount: Int = 0,
+    onOpenChildren: () -> Unit = {},
     onOpenEvents: () -> Unit,
+    onArchive: () -> Unit = {},
     onDismiss: () -> Unit,
 ) {
     BackHandler(onBack = onDismiss)
     FullScreenDetailContainer {
         Column(Modifier.fillMaxSize()) {
-            DetailHeader(session.title, "Session details", onDismiss)
+            DetailHeader(session.title, "Session details", onDismiss) {
+                val archived = session.sessionState?.archived == true
+                IconButton(onArchive, enabled = !archived) {
+                    Icon(
+                        Icons.Default.Archive,
+                        if (archived) "Session is archived" else "Archive session",
+                    )
+                }
+            }
             HorizontalDivider()
             LazyColumn(Modifier.fillMaxSize()) {
+                item {
+                    ListItem(
+                        headlineContent = { Text("Child sessions") },
+                        supportingContent = {
+                            Text(
+                                if (childCount == 1) "1 session has this session as its parent"
+                                else "$childCount sessions have this session as their parent"
+                            )
+                        },
+                        leadingContent = { Icon(Icons.Default.AccountTree, null) },
+                        trailingContent = {
+                            if (childCount > 0)
+                                Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null)
+                        },
+                        modifier =
+                            Modifier.fillMaxWidth()
+                                .clickable(
+                                    enabled = childCount > 0,
+                                    onClickLabel = "Open child sessions",
+                                    role = Role.Button,
+                                    onClick = onOpenChildren,
+                                ),
+                    )
+                }
+                item { HorizontalDivider() }
                 item {
                     ListItem(
                         headlineContent = { Text("Events") },
@@ -1022,6 +1080,67 @@ internal fun SessionDetailScreen(
                 }
                 session.updatedAt?.let(::formatSessionUpdate)?.let { updated ->
                     item { SessionProperty("Latest update", updated) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun SessionChildrenScreen(
+    session: HarnessSession,
+    children: List<HarnessSession>,
+    onOpenChild: (HarnessSession) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    BackHandler(onBack = onDismiss)
+    FullScreenDetailContainer {
+        Column(Modifier.fillMaxSize()) {
+            DetailHeader(session.title, "Child sessions", onDismiss)
+            HorizontalDivider()
+            if (children.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No child sessions.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            } else {
+                LazyColumn(Modifier.fillMaxSize()) {
+                    items(children, key = { it.id }) { child ->
+                        ListItem(
+                            headlineContent = { Text(child.title, maxLines = 1) },
+                            supportingContent = {
+                                Column {
+                                    child.preview?.takeIf(String::isNotBlank)?.let {
+                                        Text(it, maxLines = 2)
+                                    }
+                                    child.sessionState?.let {
+                                        Text(
+                                            formatSessionState(it),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.tertiary,
+                                        )
+                                    }
+                                }
+                            },
+                            leadingContent = { Icon(Icons.Default.SubdirectoryArrowRight, null) },
+                            trailingContent = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (child.sessionState?.archived == true) {
+                                        Badge { Text("ARCHIVED") }
+                                        Spacer(Modifier.width(8.dp))
+                                    }
+                                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null)
+                                }
+                            },
+                            modifier =
+                                Modifier.fillMaxWidth().clickable(
+                                    onClickLabel = "Open ${child.title}",
+                                    role = Role.Button,
+                                ) {
+                                    onOpenChild(child)
+                                },
+                        )
+                        HorizontalDivider()
+                    }
                 }
             }
         }

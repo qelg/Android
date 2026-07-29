@@ -146,4 +146,50 @@ class SessionEventDetailTest {
         composeRule.onNodeWithText("Events could not be loaded").assertIsDisplayed()
         composeRule.onNodeWithText("Retry").assertIsDisplayed()
     }
+
+    @Test
+    fun archivesFromDetailsAndNavigatesThroughDirectChildren() {
+        val parent = HarnessSession("parent", "Parent session")
+        val children =
+            listOf(
+                HarnessSession("child_1", "First child", parentSessionId = parent.id),
+                HarnessSession("child_2", "Second child", parentSessionId = parent.id),
+            )
+        var page by mutableStateOf("details")
+        var archiveRequested = false
+        var openedChild: String? = null
+        composeRule.activityRule.scenario.onActivity { activity ->
+            activity.setContent {
+                MaterialTheme {
+                    if (page == "details") {
+                        SessionDetailScreen(
+                            session = parent,
+                            eventCount = null,
+                            childCount = children.size,
+                            onOpenChildren = { page = "children" },
+                            onOpenEvents = {},
+                            onArchive = { archiveRequested = true },
+                            onDismiss = {},
+                        )
+                    } else {
+                        SessionChildrenScreen(
+                            session = parent,
+                            children = children,
+                            onOpenChild = { openedChild = it.id },
+                            onDismiss = { page = "details" },
+                        )
+                    }
+                }
+            }
+        }
+
+        composeRule.onNodeWithContentDescription("Archive session").performClick()
+        composeRule.runOnIdle { org.junit.Assert.assertTrue(archiveRequested) }
+        composeRule
+            .onNodeWithText("2 sessions have this session as their parent")
+            .assertIsDisplayed()
+            .performClick()
+        composeRule.onNodeWithText("First child").assertIsDisplayed().performClick()
+        composeRule.runOnIdle { org.junit.Assert.assertEquals("child_1", openedChild) }
+    }
 }
