@@ -2,6 +2,7 @@ package dev.qelg.harnessandroid
 
 import dev.qelg.harnessandroid.data.HarnessSession
 import dev.qelg.harnessandroid.data.directChildSessions
+import dev.qelg.harnessandroid.data.mergeSessionsById
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -30,6 +31,25 @@ class SessionChildrenTest {
         assertEquals(
             listOf("newer", "older"),
             directChildSessions(sessions, "parent").map { it.id },
+        )
+    }
+
+    @Test
+    fun mergesLoadedChildrenWithoutDuplicatingKnownSessions() {
+        val existing =
+            listOf(
+                HarnessSession("parent", "Parent"),
+                HarnessSession("child", "Old title", parentSessionId = "parent"),
+            )
+        val loaded =
+            listOf(
+                HarnessSession("child", "Current title", parentSessionId = "parent"),
+                HarnessSession("second", "Second child", parentSessionId = "parent"),
+            )
+
+        assertEquals(
+            listOf("Parent", "Current title", "Second child"),
+            mergeSessionsById(existing, loaded).map { it.title },
         )
     }
 }

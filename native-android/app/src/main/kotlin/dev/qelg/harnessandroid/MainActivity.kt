@@ -799,17 +799,16 @@ private fun ChatPane(
         when (val detail = sessionDetail) {
             SessionDetailPage.Overview ->
                 selectedSession?.let { session ->
-                    val children =
-                        remember(state.sessions, session.id) {
-                            directChildSessions(state.sessions, session.id)
-                        }
+                    val children = state.childSessions[session.id]
                     SessionDetailScreen(
                         session = session,
                         eventCount =
                             state.sessionEvents
                                 .takeIf { state.sessionEventsFor == session.id }
                                 ?.size,
-                        childCount = children.size,
+                        childCount = children?.size,
+                        childError = state.childSessionsErrors[session.id],
+                        onLoadChildren = { vm.loadChildSessions(session.id) },
                         onOpenChildren = { sessionDetail = SessionDetailPage.Children },
                         onOpenEvents = { sessionDetail = SessionDetailPage.Events },
                         onArchive = { vm.archiveSession(session.id) },
@@ -820,7 +819,7 @@ private fun ChatPane(
                 selectedSession?.let { session ->
                     SessionChildrenScreen(
                         session = session,
-                        children = directChildSessions(state.sessions, session.id),
+                        children = state.childSessions[session.id].orEmpty(),
                         onOpenChild = { child ->
                             sessionDetail = null
                             vm.select(child, selectedFromTree = state.treeParentId != null)
@@ -995,12 +994,15 @@ private sealed interface SessionDetailPage {
 internal fun SessionDetailScreen(
     session: HarnessSession,
     eventCount: Int?,
-    childCount: Int = 0,
+    childCount: Int? = null,
+    childError: ErrorMessage? = null,
+    onLoadChildren: () -> Unit = {},
     onOpenChildren: () -> Unit = {},
     onOpenEvents: () -> Unit,
     onArchive: () -> Unit = {},
     onDismiss: () -> Unit,
 ) {
+    LaunchedEffect(session.id) { onLoadChildren() }
     BackHandler(onBack = onDismiss)
     FullScreenDetailContainer {
         Column(Modifier.fillMaxSize()) {
@@ -1020,22 +1022,32 @@ internal fun SessionDetailScreen(
                         headlineContent = { Text("Child sessions") },
                         supportingContent = {
                             Text(
-                                if (childCount == 1) "1 session has this session as its parent"
-                                else "$childCount sessions have this session as their parent"
+                                when {
+                                    childError != null ->
+                                        "Child sessions could not be loaded. Tap to retry."
+                                    childCount == null -> "Loading child sessions…"
+                                    childCount == 1 -> "1 session has this session as its parent"
+                                    else -> "$childCount sessions have this session as their parent"
+                                }
                             )
                         },
                         leadingContent = { Icon(Icons.Default.AccountTree, null) },
                         trailingContent = {
-                            if (childCount > 0)
+                            if ((childCount ?: 0) > 0)
                                 Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null)
                         },
                         modifier =
                             Modifier.fillMaxWidth()
                                 .clickable(
-                                    enabled = childCount > 0,
-                                    onClickLabel = "Open child sessions",
+                                    enabled = (childCount ?: 0) > 0 || childError != null,
+                                    onClickLabel =
+                                        if (childError == null) "Open child sessions"
+                                        else "Retry child sessions",
                                     role = Role.Button,
-                                    onClick = onOpenChildren,
+                                    onClick = {
+                                        if (childError == null) onOpenChildren()
+                                        else onLoadChildren()
+                                    },
                                 ),
                     )
                 }

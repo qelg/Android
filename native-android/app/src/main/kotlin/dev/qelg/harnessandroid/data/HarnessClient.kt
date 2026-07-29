@@ -105,6 +105,11 @@ class HarnessClient(
     suspend fun sessions(): List<JsonObject> =
         request("GET", "/sessions").jsonArray.mapNotNull { it as? JsonObject }
 
+    suspend fun childSessions(sessionId: String): List<JsonObject> =
+        request("GET", "/sessions/${sessionId.urlEncode()}/children").jsonArray.mapNotNull {
+            it as? JsonObject
+        }
+
     suspend fun sessionStates(): List<HarnessSessionState> =
         request("GET", "/session-states").jsonArray.mapNotNull {
             (it as? JsonObject)?.let(HarnessSessionState::fromJson)
