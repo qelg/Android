@@ -209,7 +209,23 @@ fun canClearDraft(
         submitted.revision == currentRevision &&
         submitted.text == currentText
 
-data class ModelSelection(val provider: String, val model: String)
+enum class ThinkingLevel(val apiValue: String, val displayName: String) {
+    None("none", "None"),
+    Low("low", "Low"),
+    Medium("medium", "Medium"),
+    High("high", "High");
+
+    companion object {
+        fun fromApiValue(value: String?): ThinkingLevel? =
+            entries.firstOrNull { it.apiValue == value }
+    }
+}
+
+data class ModelSelection(
+    val provider: String,
+    val model: String,
+    val thinkingLevel: ThinkingLevel? = null,
+)
 
 data class ModelOption(
     val id: String,
@@ -231,7 +247,10 @@ data class ModelCatalog(
                     ?: options.firstOrNull { (_, option) -> option.resolvedModel == current }
             } ?: options.firstOrNull()
         return copy(
-            selected = match?.let { (provider, option) -> ModelSelection(provider.slug, option.id) }
+            selected =
+                match?.let { (provider, option) ->
+                    ModelSelection(provider.slug, option.id, selected?.thinkingLevel)
+                }
         )
     }
 
@@ -280,7 +299,11 @@ data class ModelCatalog(
             return ModelCatalog(
                 selected =
                     if (!selectedModel.isNullOrBlank() && !selectedProvider.isNullOrBlank())
-                        ModelSelection(selectedProvider, selectedModel)
+                        ModelSelection(
+                            selectedProvider,
+                            selectedModel,
+                            ThinkingLevel.fromApiValue(value.string("thinking_level")),
+                        )
                     else null,
                 providers = providers,
             )

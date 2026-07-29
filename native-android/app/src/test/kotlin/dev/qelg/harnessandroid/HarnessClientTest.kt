@@ -95,11 +95,13 @@ class HarnessClientTest {
     fun createsSessionAndSelectsModel() = runBlocking {
         server(MockResponse().setBody("""{"id":"sess_1"}"""), MockResponse().setBody("{}")) { c, s
             ->
-            c.createSession("test-model")
+            c.createSession(ModelSelection("mock-llm", "test-model", ThinkingLevel.High))
             s.takeRequest()
             val r = s.takeRequest()
             assertEquals("/model-selection", r.path)
-            assertTrue(r.body.readUtf8().contains("mock-llm"))
+            val body = r.body.readUtf8()
+            assertTrue(body.contains("mock-llm"))
+            assertTrue(body.contains("\"thinking_level\":\"high\""))
         }
     }
 
@@ -157,7 +159,7 @@ class HarnessClientTest {
             MockResponse().setBody("""{"providers":["chatgpt-codex"]}"""),
             MockResponse()
                 .setBody(
-                    """{"provider":"chatgpt-codex","model":"gpt-5.6-terra","scope":"session"}"""
+                    """{"provider":"chatgpt-codex","model":"gpt-5.6-terra","thinking_level":"medium","scope":"session"}"""
                 ),
         ) { client, _ ->
             val catalog = client.modelOptions("sess_1")
@@ -165,7 +167,10 @@ class HarnessClientTest {
                 listOf("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"),
                 catalog.providers.single().models.map { it.id },
             )
-            assertEquals(ModelSelection("chatgpt-codex", "gpt-5.6-terra"), catalog.selected)
+            assertEquals(
+                ModelSelection("chatgpt-codex", "gpt-5.6-terra", ThinkingLevel.Medium),
+                catalog.selected,
+            )
         }
     }
 

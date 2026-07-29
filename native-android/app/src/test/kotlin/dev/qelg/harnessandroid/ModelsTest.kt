@@ -6,6 +6,7 @@ import dev.qelg.harnessandroid.data.DraftSubmission
 import dev.qelg.harnessandroid.data.HarnessSession
 import dev.qelg.harnessandroid.data.ModelCatalog
 import dev.qelg.harnessandroid.data.ModelSelection
+import dev.qelg.harnessandroid.data.ThinkingLevel
 import dev.qelg.harnessandroid.data.ToolValuePreview
 import dev.qelg.harnessandroid.data.ToolValueRow
 import dev.qelg.harnessandroid.data.applySessionModelOverrides
@@ -644,6 +645,7 @@ class ModelsTest {
                     """{
                     "model":"gpt-5.6-sol",
                     "provider":"openai-codex",
+                    "thinking_level":"low",
                     "providers":[
                       {"slug":"openai-codex","name":"OpenAI Codex","authenticated":true,
                        "models":["gpt-5.6-sol","gpt-5.5"]},
@@ -658,7 +660,10 @@ class ModelsTest {
 
         val catalog = ModelCatalog.fromJson(payload)
 
-        assertEquals(ModelSelection("openai-codex", "gpt-5.6-sol"), catalog.selected)
+        assertEquals(
+            ModelSelection("openai-codex", "gpt-5.6-sol", ThinkingLevel.Low),
+            catalog.selected,
+        )
         assertEquals(listOf("openai-codex", "nous"), catalog.providers.map { it.slug })
         assertTrue(catalog.providers[1].models.single().unavailable)
     }
