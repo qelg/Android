@@ -32,3 +32,37 @@ internal fun eventCausationArrows(events: List<SessionEvent>): List<EventCausati
         }
         .sortedBy(EventCausationArrow::sourceIndex)
 }
+
+internal data class VisibleEventCausationSegment(
+    val arrow: EventCausationArrow,
+    val sourceY: Float,
+    val targetY: Float,
+    val sourceVisible: Boolean,
+    val targetVisible: Boolean,
+)
+
+/** Clip causal relationships to the viewport while retaining either visible endpoint. */
+internal fun visibleEventCausationSegments(
+    arrows: List<EventCausationArrow>,
+    visibleCenters: Map<Int, Float>,
+    viewportTop: Float,
+    viewportBottom: Float,
+): List<VisibleEventCausationSegment> {
+    val firstVisible = visibleCenters.keys.minOrNull() ?: return emptyList()
+    val lastVisible = visibleCenters.keys.maxOrNull() ?: return emptyList()
+    fun clippedY(index: Int): Float =
+        visibleCenters[index] ?: if (index < firstVisible) viewportTop else viewportBottom
+
+    return arrows.mapNotNull { arrow ->
+        val sourceVisible = arrow.sourceIndex in visibleCenters
+        val targetVisible = arrow.targetIndex in visibleCenters
+        if (!sourceVisible && !targetVisible) return@mapNotNull null
+        VisibleEventCausationSegment(
+            arrow = arrow,
+            sourceY = clippedY(arrow.sourceIndex),
+            targetY = clippedY(arrow.targetIndex),
+            sourceVisible = sourceVisible,
+            targetVisible = targetVisible,
+        )
+    }
+}

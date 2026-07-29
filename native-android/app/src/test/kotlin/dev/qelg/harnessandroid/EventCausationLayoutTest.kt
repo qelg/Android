@@ -47,6 +47,72 @@ class EventCausationLayoutTest {
     }
 
     @Test
+    fun keepsSegmentsWithEitherVisibleEndpointAndClipsTheOtherEndpoint() {
+        val arrows =
+            listOf(
+                EventCausationArrow(sourceIndex = 3, targetIndex = 0, lane = 0),
+                EventCausationArrow(sourceIndex = 5, targetIndex = 2, lane = 1),
+                EventCausationArrow(sourceIndex = 8, targetIndex = 7, lane = 0),
+                EventCausationArrow(sourceIndex = 9, targetIndex = 1, lane = 2),
+            )
+
+        val segments =
+            visibleEventCausationSegments(
+                arrows = arrows,
+                visibleCenters = mapOf(2 to 20f, 3 to 60f, 4 to 100f, 5 to 140f),
+                viewportTop = 0f,
+                viewportBottom = 160f,
+            )
+
+        assertEquals(2, segments.size)
+        assertEquals(
+            VisibleEventCausationSegment(
+                arrows[0],
+                60f,
+                0f,
+                sourceVisible = true,
+                targetVisible = false,
+            ),
+            segments[0],
+        )
+        assertEquals(
+            VisibleEventCausationSegment(
+                arrows[1],
+                140f,
+                20f,
+                sourceVisible = true,
+                targetVisible = true,
+            ),
+            segments[1],
+        )
+    }
+
+    @Test
+    fun drawsRelationshipWhenOnlyCausationEndpointIsVisible() {
+        val arrow = EventCausationArrow(sourceIndex = 7, targetIndex = 3, lane = 0)
+
+        val segment =
+            visibleEventCausationSegments(
+                    arrows = listOf(arrow),
+                    visibleCenters = mapOf(2 to 20f, 3 to 60f, 4 to 100f),
+                    viewportTop = 0f,
+                    viewportBottom = 120f,
+                )
+                .single()
+
+        assertEquals(
+            VisibleEventCausationSegment(
+                arrow,
+                120f,
+                60f,
+                sourceVisible = false,
+                targetVisible = true,
+            ),
+            segment,
+        )
+    }
+
+    @Test
     fun unresolvedAndSelfCausationDoNotCreateMisleadingArrows() {
         val events = listOf(event(1, cause = 99), event(2, cause = 2))
 
