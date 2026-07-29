@@ -593,6 +593,9 @@ fun buildSessionTree(sessions: List<HarnessSession>): Map<String, List<HarnessSe
     return byParent
 }
 
+fun directChildSessions(sessions: List<HarnessSession>, sessionId: String): List<HarnessSession> =
+    sortSessionsForOverview(sessions.filter { it.parentSessionId == sessionId })
+
 fun childCount(sessions: List<HarnessSession>, sessionId: String): Int {
     val tree = buildSessionTree(sessions)
     val visited = mutableSetOf<String>()
