@@ -97,10 +97,11 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-savedstate:2.8.7")
     implementation("androidx.datastore:datastore-preferences:1.1.2")
-    implementation("androidx.security:security-crypto:1.1.0-alpha06") {
-        exclude(group = "com.google.crypto.tink", module = "tink-android")
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    implementation("org.unifiedpush.android:connector:3.0.10") {
+        exclude(group = "com.google.crypto.tink", module = "tink")
     }
-    implementation("org.unifiedpush.android:connector:3.0.10")
+    implementation("com.google.crypto.tink:tink-android:1.17.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0")
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
