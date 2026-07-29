@@ -118,25 +118,35 @@ class HarnessClientTest {
     @Test
     fun watchesSessionDeltasAndCompletionFromLastHistoryEvent() = runBlocking {
         val body =
-            """id: 3
-                |event: llm.delta
-                |data: {"event":{"id":3,"name":"llm.delta","payload":{"delta":"Hi"},"created_at_ms":1752757200123}}
-                |
-                |id: 4
-                |event: chat.message.assistant.created
-                |data: {"event":{"id":4,"name":"chat.message.assistant.created","payload":{"content":"Hi"},"created_at_ms":1752757201123}}
-                |
-                |"""
+            """
+            |id: 3
+            |event: llm.delta
+            |data: {"event":{"id":3,"name":"llm.delta","payload":{"delta":"Hi"},"created_at_ms":1752757200123}}
+            |
+            |id: 4
+            |event: chat.message.assistant.created
+            |data: {"event":{"id":4,"name":"chat.message.assistant.created","payload":{"content":"Hi"},"created_at_ms":1752757201123}}
+            |
+            |id: 5
+            |event: session.state
+            |data: {"event":{"id":5,"name":"session.state","tags":{"session":"sess_1","state":"finished","read":"unread"},"payload":{"source_event_id":4,"outcome":"stop"},"created_at_ms":1752757202123}}
+            |
+            |"""
                 .trimMargin()
         server(MockResponse().setHeader("Content-Type", "text/event-stream").setBody(body)) {
             client,
             server ->
-            val got = async { client.events.take(2).toList() }
+            val got = async { client.events.take(3).toList() }
             client.watchSession("sess_1", 2)
+            val events = withTimeout(5_000) { got.await() }
             assertEquals(
-                listOf("message.delta", "message.complete"),
-                withTimeout(5_000) { got.await() }.map { it.type },
+                listOf("message.delta", "message.complete", "session.state"),
+                events.map { it.type },
             )
+            assertEquals("finished", events[2].payload["state"]?.jsonPrimitive?.content)
+            assertEquals("unread", events[2].payload["read"]?.jsonPrimitive?.content)
+            assertEquals("stop", events[2].payload["outcome"]?.jsonPrimitive?.content)
+            assertEquals(5L, events[2].payload["event_id"]?.jsonPrimitive?.content?.toLong())
             assertEquals("/sessions/sess_1/messages/updates?since_id=2", server.takeRequest().path)
         }
     }

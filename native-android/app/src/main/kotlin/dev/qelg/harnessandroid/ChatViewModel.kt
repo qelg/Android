@@ -80,7 +80,6 @@ data class ChatUiState(
     val title: String = "Harness Android",
     val items: List<ChatItem> = emptyList(),
     val timelines: Map<String, List<ChatItem>> = emptyMap(),
-    val active: Boolean = false,
     val activeSessionIds: Set<String> = emptySet(),
     val modelCatalog: ModelCatalog = ModelCatalog(),
     val modelLoading: Boolean = false,
@@ -97,7 +96,10 @@ data class ChatUiState(
     val sessionEventsFor: String? = null,
     val sessionEventsLoading: Boolean = false,
     val sessionEventsError: ErrorMessage? = null,
-)
+) {
+    val active: Boolean
+        get() = selectedId != null && selectedId in activeSessionIds
+}
 
 internal fun ChatUiState.timelineFor(sessionId: String): List<ChatItem> =
     if (selectedId == sessionId) items else timelines[sessionId].orEmpty()
@@ -110,6 +112,51 @@ internal fun ChatUiState.withTimeline(sessionId: String, timeline: List<ChatItem
 
 internal fun ChatUiState.withCurrentItems(timeline: List<ChatItem>): ChatUiState =
     selectedId?.let { withTimeline(it, timeline) } ?: copy(items = timeline)
+
+internal fun newestSessionStates(
+    fetched: List<HarnessSessionState>,
+    current: List<HarnessSessionState>,
+): List<HarnessSessionState> {
+    val newest = current.associateBy(HarnessSessionState::sessionId).toMutableMap()
+    fetched.forEach { candidate ->
+        val existing = newest[candidate.sessionId]
+        if (
+            existing == null ||
+                existing.eventId == null ||
+                candidate.eventId == null ||
+                candidate.eventId >= existing.eventId
+        )
+            newest[candidate.sessionId] = candidate
+    }
+    return newest.values.toList()
+}
+
+internal fun ChatUiState.withSessionState(sessionState: HarnessSessionState): ChatUiState {
+    val existing = sessions.firstOrNull { it.id == sessionState.sessionId }?.sessionState
+    if (
+        existing?.eventId != null &&
+            sessionState.eventId != null &&
+            sessionState.eventId < existing.eventId
+    )
+        return this
+    val activeIds =
+        if (sessionState.running) activeSessionIds + sessionState.sessionId
+        else activeSessionIds - sessionState.sessionId
+    return copy(
+        sessions =
+            sessions.map { session ->
+                if (session.id == sessionState.sessionId)
+                    session.copy(
+                        updatedAt = sessionState.updatedAt ?: session.updatedAt,
+                        active = sessionState.running,
+                        endReason = sessionState.outcome ?: session.endReason,
+                        sessionState = sessionState,
+                    )
+                else session
+            },
+        activeSessionIds = activeIds,
+    )
+}
 
 class ChatViewModel(application: Application, private val savedState: SavedStateHandle) :
     AndroidViewModel(application) {
@@ -198,7 +245,6 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 activeSessionIds = emptySet(),
                 approval = null,
                 clarify = null,
-                active = false,
                 error = null,
                 reconnectSeconds = null,
                 tokenUsage = null,
@@ -335,9 +381,11 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             )
         // Keep the session list usable against older deployments, while preferring
         // the server-authoritative state projection whenever it is available.
+        val currentSessionStates = state.value.sessions.mapNotNull(HarnessSession::sessionState)
         val sessionStates =
-            runCatching { api.sessionStates() }.getOrNull()
-                ?: state.value.sessions.mapNotNull(HarnessSession::sessionState)
+            runCatching { api.sessionStates() }
+                .getOrNull()
+                ?.let { newestSessionStates(it, currentSessionStates) } ?: currentSessionStates
         val sessions = applySessionStates(baseSessions, sessionStates)
         _state.update {
             val selectedSession = sessions.firstOrNull { session -> session.id == it.selectedId }
@@ -352,10 +400,6 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                     sessions.filter(HarnessSession::active).mapTo(mutableSetOf()) { session ->
                         session.id
                     },
-                active =
-                    it.selectedId?.let { id ->
-                        sessions.firstOrNull { session -> session.id == id }?.active
-                    } ?: false,
                 connecting = false,
                 modelCatalog =
                     if (selectedSession != null) it.modelCatalog.selectedFor(selectedModel)
@@ -510,7 +554,6 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                             historyLoadedFor = stored,
                             approval = null,
                             clarify = null,
-                            active = false,
                             connecting = false,
                             tokenUsage = null,
                             sessions = listOf(session) + it.sessions,
@@ -547,7 +590,8 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 historyLoadedFor = null,
                 approval = null,
                 clarify = null,
-                active = session.id in it.activeSessionIds || session.active,
+                activeSessionIds =
+                    if (session.active) it.activeSessionIds + session.id else it.activeSessionIds,
                 error = null,
                 reconnectSeconds = null,
                 tokenUsage = initialTokenUsage(session),
@@ -721,11 +765,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         _state.update {
             val timeline = it.timelineFor(storedId) + pending
             it.withTimeline(storedId, timeline)
-                .copy(
-                    active = if (it.selectedId == storedId) true else it.active,
-                    activeSessionIds = it.activeSessionIds + storedId,
-                    error = null,
-                )
+                .copy(activeSessionIds = it.activeSessionIds + storedId, error = null)
         }
         viewModelScope.launch {
             runCatching { client?.submit(targetRuntimeId, clean, model) ?: error("Not connected") }
@@ -736,7 +776,6 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                         val timeline = cancelRunningTools(it.timelineFor(storedId), now)
                         it.withTimeline(storedId, timeline)
                             .copy(
-                                active = if (it.selectedId == storedId) false else it.active,
                                 activeSessionIds = it.activeSessionIds - storedId,
                                 approval = null,
                                 clarify = null,
@@ -839,10 +878,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         _state.update {
             val timeline = it.timelineFor(target.storedSessionId) + pending
             it.withTimeline(target.storedSessionId, timeline)
-                .copy(
-                    activeSessionIds = it.activeSessionIds + target.storedSessionId,
-                    active = if (it.selectedId == target.storedSessionId) true else it.active,
-                )
+                .copy(activeSessionIds = it.activeSessionIds + target.storedSessionId)
         }
         viewModelScope.launch {
             runCatching { api.submit(target.runtimeSessionId, clean, target.model) }
@@ -856,12 +892,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                         val timeline =
                             cancelRunningTools(it.timelineFor(target.storedSessionId), now)
                         it.withTimeline(target.storedSessionId, timeline)
-                            .copy(
-                                activeSessionIds = it.activeSessionIds - target.storedSessionId,
-                                active =
-                                    if (it.selectedId == target.storedSessionId) false
-                                    else it.active,
-                            )
+                            .copy(activeSessionIds = it.activeSessionIds - target.storedSessionId)
                     }
                     showError(error)
                 }
@@ -952,21 +983,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             runCatching { api.archiveSession(sessionId) }
                 .onSuccess { archived ->
                     if (client === api && connectionVersion == version) {
-                        _state.update { ui ->
-                            ui.copy(
-                                sessions =
-                                    ui.sessions.map { session ->
-                                        if (session.id == sessionId)
-                                            session.copy(
-                                                updatedAt = archived.updatedAt ?: session.updatedAt,
-                                                active = archived.running,
-                                                endReason = archived.outcome ?: session.endReason,
-                                                sessionState = archived,
-                                            )
-                                        else session
-                                    }
-                            )
-                        }
+                        _state.update { it.withSessionState(archived) }
                     }
                 }
                 .onFailure { if (client === api && connectionVersion == version) showError(it) }
@@ -1080,6 +1097,23 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     }
 
     private fun handleEvent(event: GatewayEvent) {
+        if (event.type == "session.state") {
+            val stored = storedSessionId(event) ?: return
+            val sessionState =
+                HarnessSessionState.fromJson(JsonObject(event.payload)).copy(sessionId = stored)
+            if (!sessionState.running && !sessionState.finished) return
+            val now = Instant.now()
+            _state.update { current ->
+                val updated = current.withSessionState(sessionState)
+                if (sessionState.finished && updated.selectedId == stored)
+                    updated
+                        .withCurrentItems(cancelRunningTools(updated.items, now))
+                        .copy(approval = null, clarify = null)
+                else updated
+            }
+            if (sessionState.finished && state.value.selectedId == stored) refreshTokenUsage()
+            return
+        }
         val current = runtimeId
         if (event.sessionId != null && event.sessionId != current) {
             val stored = storedSessionId(event)
@@ -1119,7 +1153,6 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 _state.update {
                     it.withCurrentItems(cancelRunningTools(it.items, now))
                         .copy(
-                            active = false,
                             activeSessionIds =
                                 it.selectedId?.let { id -> it.activeSessionIds - id }
                                     ?: it.activeSessionIds,
@@ -1208,7 +1241,6 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                             )
                         )
                         .copy(
-                            active = false,
                             activeSessionIds =
                                 it.selectedId?.let { id -> it.activeSessionIds - id }
                                     ?: it.activeSessionIds,
@@ -1328,7 +1360,15 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 }
             }
             "error" -> {
-                _state.update { it.copy(active = false, approval = null, clarify = null) }
+                _state.update {
+                    it.copy(
+                        activeSessionIds =
+                            it.selectedId?.let { id -> it.activeSessionIds - id }
+                                ?: it.activeSessionIds,
+                        approval = null,
+                        clarify = null,
+                    )
+                }
                 showError(
                     IllegalStateException(
                         event.payload["message"]?.jsonPrimitive?.contentOrNull
