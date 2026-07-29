@@ -95,13 +95,13 @@ class HarnessClientTest {
     fun createsSessionAndSelectsModel() = runBlocking {
         server(MockResponse().setBody("""{"id":"sess_1"}"""), MockResponse().setBody("{}")) { c, s
             ->
-            c.createSession(ModelSelection("mock-llm", "test-model", ThinkingLevel.Max))
+            c.createSession(ModelSelection("mock-llm", "test-model", ThinkingLevel.High))
             s.takeRequest()
             val r = s.takeRequest()
             assertEquals("/model-selection", r.path)
             val body = r.body.readUtf8()
             assertTrue(body.contains("mock-llm"))
-            assertTrue(body.contains("\"thinking_level\":\"max\""))
+            assertTrue(body.contains("\"thinking_level\":\"high\""))
         }
     }
 

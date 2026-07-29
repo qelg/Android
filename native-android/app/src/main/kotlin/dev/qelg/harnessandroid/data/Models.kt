@@ -213,7 +213,7 @@ enum class ThinkingLevel(val apiValue: String, val displayName: String) {
     None("none", "None"),
     Low("low", "Low"),
     Medium("medium", "Medium"),
-    Max("max", "Max");
+    High("high", "High");
 
     companion object {
         fun fromApiValue(value: String?): ThinkingLevel? =
