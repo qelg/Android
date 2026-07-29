@@ -174,8 +174,7 @@ fun prioritizeSessionsWithDrafts(
 ): List<HarnessSession> {
     val sorted = sortSessionsForOverview(sessions)
     val (live, inactive) = sorted.partition(HarnessSession::active)
-    val (liveWithDraft, liveWithoutDraft) =
-        live.partition { drafts[it.id]?.isNotBlank() == true }
+    val (liveWithDraft, liveWithoutDraft) = live.partition { drafts[it.id]?.isNotBlank() == true }
     val (inactiveWithDraft, inactiveWithoutDraft) =
         inactive.partition { drafts[it.id]?.isNotBlank() == true }
     return liveWithDraft + liveWithoutDraft + inactiveWithDraft + inactiveWithoutDraft

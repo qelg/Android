@@ -241,12 +241,7 @@ class ModelsTest {
         val sessions =
             listOf(
                 HarnessSession("draft", "Draft", updatedAt = "2026-07-18T10:00:00Z"),
-                HarnessSession(
-                    "live",
-                    "Live",
-                    updatedAt = "2026-07-18T08:00:00Z",
-                    active = true,
-                ),
+                HarnessSession("live", "Live", updatedAt = "2026-07-18T08:00:00Z", active = true),
             )
 
         assertEquals(
