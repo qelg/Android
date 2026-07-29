@@ -303,6 +303,21 @@ class HarnessClient(
                     )
                 }
             }
+            "session.state" -> {
+                val tags = eventRecord["tags"] as? JsonObject ?: JsonObject(emptyMap())
+                val statePayload = buildMap {
+                    put("session_id", JsonPrimitive(sessionId))
+                    listOf("state", "read", "archive").forEach { key ->
+                        tags[key]?.let { put(key, it) }
+                    }
+                    listOf("source_event_id", "outcome").forEach { key ->
+                        payload[key]?.let { put(key, it) }
+                    }
+                    eventRecord["id"]?.let { put("event_id", it) }
+                    timestamp?.let { put("created_at_ms", it) }
+                }
+                eventChannel.send(GatewayEvent("session.state", sessionId, statePayload))
+            }
             "chat.message.user.created" ->
                 eventChannel.send(
                     GatewayEvent(

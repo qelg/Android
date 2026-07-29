@@ -93,4 +93,55 @@ class SessionStateTest {
         assertEquals(session, applySessionStates(listOf(session), emptyList()).single())
         assertTrue(isSessionRead(session, "2026-07-18T09:00:00Z"))
     }
+
+    @Test
+    fun liveSessionStateIsPerSessionAndSelectedActivityIsDerived() {
+        val initial =
+            ChatUiState(
+                selectedId = "first",
+                sessions =
+                    listOf(HarnessSession("first", "First"), HarnessSession("second", "Second")),
+            )
+
+        val secondRunning =
+            initial.withSessionState(HarnessSessionState("second", "running", eventId = 10))
+        assertFalse(secondRunning.active)
+        assertEquals(setOf("second"), secondRunning.activeSessionIds)
+
+        val selectedRunning = secondRunning.copy(selectedId = "second")
+        assertTrue(selectedRunning.active)
+
+        val secondFinished =
+            selectedRunning.withSessionState(
+                HarnessSessionState("second", "finished", read = "unread", eventId = 11)
+            )
+        assertFalse(secondFinished.active)
+        assertTrue(secondFinished.sessions.single { it.id == "second" }.sessionState!!.finished)
+    }
+
+    @Test
+    fun olderLiveSessionStateCannotReplaceNewerState() {
+        val finished =
+            ChatUiState(
+                    selectedId = "session",
+                    sessions = listOf(HarnessSession("session", "Session")),
+                )
+                .withSessionState(
+                    HarnessSessionState("session", "finished", read = "unread", eventId = 12)
+                )
+
+        val staleRunning =
+            finished.withSessionState(HarnessSessionState("session", "running", eventId = 11))
+
+        assertEquals(finished, staleRunning)
+        assertFalse(staleRunning.active)
+    }
+
+    @Test
+    fun staleStateRefreshCannotReplaceNewerLiveState() {
+        val current = HarnessSessionState("session", "finished", read = "unread", eventId = 12)
+        val staleFetched = HarnessSessionState("session", "running", eventId = 11)
+
+        assertEquals(listOf(current), newestSessionStates(listOf(staleFetched), listOf(current)))
+    }
 }
