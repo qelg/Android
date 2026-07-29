@@ -26,8 +26,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
@@ -1180,45 +1178,96 @@ private fun EventCausationCanvas(
                 "${events[arrow.sourceIndex].displayName} caused by ${events[arrow.targetIndex].displayName}"
             }
         }
-    val visibleItems = listState.layoutInfo.visibleItemsInfo
     Canvas(
         Modifier.fillMaxSize().testTag("causation-arrows").semantics {
             contentDescription = descriptions
         }
     ) {
+        // Read layoutInfo in the draw phase so every fractional scroll offset invalidates drawing
+        // without waiting for a recomposition of the event list.
+        val layoutInfo = listState.layoutInfo
         val centers =
-            visibleItems
+            layoutInfo.visibleItemsInfo
                 .mapNotNull { item ->
                     val index = eventIndexesByKey[item.key as? String] ?: return@mapNotNull null
                     index to (item.offset + item.size / 2f)
                 }
                 .toMap()
+        val segments =
+            visibleEventCausationSegments(
+                arrows = arrows,
+                visibleCenters = centers,
+                viewportTop = layoutInfo.viewportStartOffset.toFloat().coerceAtLeast(0f),
+                viewportBottom = layoutInfo.viewportEndOffset.toFloat().coerceAtMost(size.height),
+            )
         val rowEdge = gutterWidth.toPx() - 2.dp.toPx()
-        val laneSpacing = 12.dp.toPx()
-        val arrowSize = 7.dp.toPx()
-        arrows.forEach { arrow ->
-            val sourceY = centers[arrow.sourceIndex] ?: return@forEach
-            val targetY = centers[arrow.targetIndex] ?: return@forEach
-            val laneX = rowEdge - 14.dp.toPx() - arrow.lane * laneSpacing
+        val laneCount = (arrows.maxOfOrNull { it.lane } ?: -1) + 1
+        val availableLaneWidth = (rowEdge - 8.dp.toPx()).coerceAtLeast(1.dp.toPx())
+        val laneSpacing =
+            if (laneCount <= 1) 0f else availableLaneWidth / laneCount.coerceAtLeast(1)
+        val arrowSize = 6.dp.toPx()
+        val strokeWidth = 2.dp.toPx()
+        segments.forEach { segment ->
+            val arrow = segment.arrow
+            val laneX = rowEdge - 12.dp.toPx() - arrow.lane * laneSpacing
             val color = if (arrow.lane % 2 == 0) primary else secondary
-            val path =
-                Path().apply {
-                    moveTo(rowEdge, sourceY)
-                    cubicTo(laneX, sourceY, laneX, targetY, rowEdge, targetY)
-                }
-            drawPath(path, color, style = Stroke(width = 2.dp.toPx()))
+            if (segment.sourceVisible) {
+                drawLine(
+                    color,
+                    start = androidx.compose.ui.geometry.Offset(rowEdge, segment.sourceY),
+                    end = androidx.compose.ui.geometry.Offset(laneX, segment.sourceY),
+                    strokeWidth = strokeWidth,
+                )
+            }
             drawLine(
                 color,
-                start = androidx.compose.ui.geometry.Offset(rowEdge, targetY),
-                end = androidx.compose.ui.geometry.Offset(rowEdge - arrowSize, targetY - arrowSize),
-                strokeWidth = 2.dp.toPx(),
+                start = androidx.compose.ui.geometry.Offset(laneX, segment.sourceY),
+                end = androidx.compose.ui.geometry.Offset(laneX, segment.targetY),
+                strokeWidth = strokeWidth,
             )
-            drawLine(
-                color,
-                start = androidx.compose.ui.geometry.Offset(rowEdge, targetY),
-                end = androidx.compose.ui.geometry.Offset(rowEdge - arrowSize, targetY + arrowSize),
-                strokeWidth = 2.dp.toPx(),
-            )
+            if (segment.targetVisible) {
+                drawLine(
+                    color,
+                    start = androidx.compose.ui.geometry.Offset(laneX, segment.targetY),
+                    end = androidx.compose.ui.geometry.Offset(rowEdge, segment.targetY),
+                    strokeWidth = strokeWidth,
+                )
+                drawLine(
+                    color,
+                    start = androidx.compose.ui.geometry.Offset(rowEdge, segment.targetY),
+                    end =
+                        androidx.compose.ui.geometry.Offset(
+                            rowEdge - arrowSize,
+                            segment.targetY - arrowSize,
+                        ),
+                    strokeWidth = strokeWidth,
+                )
+                drawLine(
+                    color,
+                    start = androidx.compose.ui.geometry.Offset(rowEdge, segment.targetY),
+                    end =
+                        androidx.compose.ui.geometry.Offset(
+                            rowEdge - arrowSize,
+                            segment.targetY + arrowSize,
+                        ),
+                    strokeWidth = strokeWidth,
+                )
+            } else {
+                val pointsUp = segment.targetY <= segment.sourceY
+                val tailY = segment.targetY + if (pointsUp) arrowSize else -arrowSize
+                drawLine(
+                    color,
+                    start = androidx.compose.ui.geometry.Offset(laneX, segment.targetY),
+                    end = androidx.compose.ui.geometry.Offset(laneX - arrowSize, tailY),
+                    strokeWidth = strokeWidth,
+                )
+                drawLine(
+                    color,
+                    start = androidx.compose.ui.geometry.Offset(laneX, segment.targetY),
+                    end = androidx.compose.ui.geometry.Offset(laneX + arrowSize, tailY),
+                    strokeWidth = strokeWidth,
+                )
+            }
         }
     }
 }
