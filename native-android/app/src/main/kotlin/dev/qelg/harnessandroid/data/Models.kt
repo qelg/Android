@@ -113,7 +113,10 @@ fun filterSessions(sessions: List<HarnessSession>, query: String): List<HarnessS
 }
 
 fun sortSessionsForOverview(sessions: List<HarnessSession>): List<HarnessSession> =
-    sessions.sortedWith(compareByDescending { it.updatedAt?.let(::parseSessionUpdateInstant) })
+    sessions.sortedWith(
+        compareByDescending<HarnessSession> { it.active }
+            .thenByDescending { it.updatedAt?.let(::parseSessionUpdateInstant) }
+    )
 
 private val earliestSessionUpdate = java.time.Instant.parse("2000-01-01T00:00:00Z")
 private val latestSessionUpdateExclusive = java.time.Instant.parse("2100-01-01T00:00:00Z")
@@ -170,8 +173,11 @@ fun prioritizeSessionsWithDrafts(
     drafts: Map<String, String>,
 ): List<HarnessSession> {
     val sorted = sortSessionsForOverview(sessions)
-    val (withDraft, withoutDraft) = sorted.partition { drafts[it.id]?.isNotBlank() == true }
-    return withDraft + withoutDraft
+    val (live, inactive) = sorted.partition(HarnessSession::active)
+    val (liveWithDraft, liveWithoutDraft) = live.partition { drafts[it.id]?.isNotBlank() == true }
+    val (inactiveWithDraft, inactiveWithoutDraft) =
+        inactive.partition { drafts[it.id]?.isNotBlank() == true }
+    return liveWithDraft + liveWithoutDraft + inactiveWithDraft + inactiveWithoutDraft
 }
 
 fun updateDrafts(

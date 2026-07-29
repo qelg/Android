@@ -146,6 +146,31 @@ class ModelsTest {
     }
 
     @Test
+    fun liveSessionsAreSortedBeforeNewerInactiveSessions() {
+        val sessions =
+            listOf(
+                HarnessSession("inactive-new", "Inactive", updatedAt = "2026-07-18T10:00:00Z"),
+                HarnessSession(
+                    "live-old",
+                    "Live old",
+                    updatedAt = "2026-07-18T08:00:00Z",
+                    active = true,
+                ),
+                HarnessSession(
+                    "live-new",
+                    "Live new",
+                    updatedAt = "2026-07-18T09:00:00Z",
+                    active = true,
+                ),
+            )
+
+        assertEquals(
+            listOf("live-new", "live-old", "inactive-new"),
+            sortSessionsForOverview(sessions).map(HarnessSession::id),
+        )
+    }
+
+    @Test
     fun latestUpdateIsFormattedInTheDevicesZone() {
         assertEquals(
             "18.07.2026, 12:00",
@@ -209,6 +234,21 @@ class ModelsTest {
         val sorted = prioritizeSessionsWithDrafts(sessions, mapOf("2" to "draft", "4" to "other"))
 
         assertEquals(listOf("2", "4", "1", "3"), sorted.map { it.id })
+    }
+
+    @Test
+    fun inactiveDraftsDoNotOvertakeLiveSessions() {
+        val sessions =
+            listOf(
+                HarnessSession("draft", "Draft", updatedAt = "2026-07-18T10:00:00Z"),
+                HarnessSession("live", "Live", updatedAt = "2026-07-18T08:00:00Z", active = true),
+            )
+
+        assertEquals(
+            listOf("live", "draft"),
+            prioritizeSessionsWithDrafts(sessions, mapOf("draft" to "unfinished"))
+                .map(HarnessSession::id),
+        )
     }
 
     @Test
