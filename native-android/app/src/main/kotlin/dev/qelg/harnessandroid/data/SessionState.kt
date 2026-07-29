@@ -9,6 +9,7 @@ data class HarnessSessionState(
     val sessionId: String,
     val state: String,
     val read: String? = null,
+    val archive: String? = null,
     val outcome: String? = null,
     val sourceEventId: Long? = null,
     val eventId: Long? = null,
@@ -23,6 +24,9 @@ data class HarnessSessionState(
     val unread: Boolean
         get() = finished && read == "unread"
 
+    val archived: Boolean
+        get() = archive == "true"
+
     val updatedAt: String?
         get() = createdAtMs?.let { Instant.ofEpochMilli(it).toString() }
 
@@ -32,6 +36,7 @@ data class HarnessSessionState(
                 sessionId = value.string("session_id").orEmpty(),
                 state = value.string("state").orEmpty(),
                 read = value.string("read"),
+                archive = value.string("archive"),
                 outcome = value.string("outcome"),
                 sourceEventId = value["source_event_id"]?.jsonPrimitive?.longOrNull,
                 eventId = value["event_id"]?.jsonPrimitive?.longOrNull,
@@ -67,3 +72,9 @@ fun formatSessionState(state: HarnessSessionState): String =
         state.finished -> "Finished"
         else -> state.state.replaceFirstChar { it.uppercase() }
     }
+
+fun filterArchivedSessions(
+    sessions: List<HarnessSession>,
+    showArchived: Boolean,
+): List<HarnessSession> =
+    if (showArchived) sessions else sessions.filterNot { it.sessionState?.archived == true }
