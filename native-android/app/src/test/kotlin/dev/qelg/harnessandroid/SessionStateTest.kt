@@ -3,6 +3,7 @@ package dev.qelg.harnessandroid
 import dev.qelg.harnessandroid.data.HarnessSession
 import dev.qelg.harnessandroid.data.HarnessSessionState
 import dev.qelg.harnessandroid.data.applySessionStates
+import dev.qelg.harnessandroid.data.filterArchivedSessions
 import dev.qelg.harnessandroid.data.formatSessionState
 import dev.qelg.harnessandroid.data.isSessionRead
 import java.time.Instant
@@ -19,7 +20,7 @@ class SessionStateTest {
         val state =
             HarnessSessionState.fromJson(
                 Json.parseToJsonElement(
-                        """{"session_id":"sess_1","state":"finished","read":"unread","source_event_id":11,"outcome":"stop","event_id":12,"created_at_ms":1752757200123}"""
+                        """{"session_id":"sess_1","state":"finished","read":"unread","archive":"true","source_event_id":11,"outcome":"stop","event_id":12,"created_at_ms":1752757200123}"""
                     )
                     .jsonObject
             )
@@ -27,6 +28,7 @@ class SessionStateTest {
         assertEquals("sess_1", state.sessionId)
         assertTrue(state.finished)
         assertTrue(state.unread)
+        assertTrue(state.archived)
         assertEquals("stop", state.outcome)
         assertEquals(11L, state.sourceEventId)
         assertEquals(12L, state.eventId)
@@ -63,6 +65,24 @@ class SessionStateTest {
         assertTrue(updated[1].active)
         assertEquals("Finished · stop", formatSessionState(updated[0].sessionState!!))
         assertEquals("Running", formatSessionState(updated[1].sessionState!!))
+    }
+
+    @Test
+    fun archivedSessionsAreHiddenByDefault() {
+        val visible = HarnessSession("visible", "Visible")
+        val archived =
+            HarnessSession(
+                "archived",
+                "Archived",
+                sessionState =
+                    HarnessSessionState("archived", "finished", read = "read", archive = "true"),
+            )
+
+        assertEquals(listOf(visible), filterArchivedSessions(listOf(visible, archived), false))
+        assertEquals(
+            listOf(visible, archived),
+            filterArchivedSessions(listOf(visible, archived), true),
+        )
     }
 
     @Test
