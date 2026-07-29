@@ -30,6 +30,17 @@ class SecureCredentials(context: Context) {
                 null
             }
 
+    fun loadPushEndpoint(): String? =
+        runCatching { preferences().getString("push_endpoint", null) }.getOrNull()
+
+    fun savePushEndpoint(endpoint: String) {
+        preferences().edit().putString("push_endpoint", endpoint).apply()
+    }
+
+    fun clearPushEndpoint() {
+        runCatching { preferences().edit().remove("push_endpoint").apply() }
+    }
+
     fun save(config: ConnectionConfig) {
         runCatching {
                 preferences()

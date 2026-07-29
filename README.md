@@ -16,6 +16,7 @@ A native Kotlin/Jetpack Compose Android client for [qelg/harness](https://github
 - Store an optional bearer token using Android Keystore
 - Discover providers and tools exposed by Harness
 - Record, transcribe, and send voice messages entirely on-device with a configurable Whisper model (verified model downloads on first use)
+- Receive finished top-level session notifications through UnifiedPush, with notification taps opening the session directly
 
 Capabilities qelg/harness does not expose—approval responses, run cancellation, and detailed token/context
 accounting—stay unavailable rather than using a separate legacy backend. Voice transcription is local and does
@@ -33,3 +34,7 @@ is accepted only for localhost, private-network addresses, and Tailscale hosts.
 ```bash
 ./native-android/gradlew -p native-android spotlessCheck lintDebug testDebugUnitTest assembleDebug assembleDebugAndroidTest
 ```
+
+## UnifiedPush
+
+Install and configure a UnifiedPush distributor (for example ntfy or Sunup) on the phone. After the app connects to a compatible Harness server, it asks the selected distributor for an endpoint and registers that endpoint with Harness. Android 13 and newer also ask for notification permission. No Google Play Services or FCM configuration is used.
