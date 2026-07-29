@@ -1338,12 +1338,13 @@ private fun EventCausationCanvas(
                     strokeWidth = strokeWidth,
                 )
             }
-            drawLine(
-                color,
-                start = androidx.compose.ui.geometry.Offset(laneX, segment.sourceY),
-                end = androidx.compose.ui.geometry.Offset(laneX, segment.targetY),
-                strokeWidth = strokeWidth,
-            )
+            if (segment.sourceVisible && segment.targetVisible) {
+                drawCircle(
+                    color = color,
+                    radius = 3.dp.toPx(),
+                    center = androidx.compose.ui.geometry.Offset(laneX, segment.sourceY),
+                )
+            }
             if (segment.targetVisible) {
                 drawLine(
                     color,
@@ -1372,17 +1373,19 @@ private fun EventCausationCanvas(
                     strokeWidth = strokeWidth,
                 )
             } else {
+                // Keep only a directional arrowhead at the source lane. The matching lane and
+                // color identify the relationship without a long vertical line through the list.
                 val pointsUp = segment.targetY <= segment.sourceY
-                val tailY = segment.targetY + if (pointsUp) arrowSize else -arrowSize
+                val tailY = segment.sourceY + if (pointsUp) arrowSize else -arrowSize
                 drawLine(
                     color,
-                    start = androidx.compose.ui.geometry.Offset(laneX, segment.targetY),
+                    start = androidx.compose.ui.geometry.Offset(laneX, segment.sourceY),
                     end = androidx.compose.ui.geometry.Offset(laneX - arrowSize, tailY),
                     strokeWidth = strokeWidth,
                 )
                 drawLine(
                     color,
-                    start = androidx.compose.ui.geometry.Offset(laneX, segment.targetY),
+                    start = androidx.compose.ui.geometry.Offset(laneX, segment.sourceY),
                     end = androidx.compose.ui.geometry.Offset(laneX + arrowSize, tailY),
                     strokeWidth = strokeWidth,
                 )
