@@ -115,6 +115,11 @@ class HarnessClient(
             request("POST", "/sessions/${sessionId.urlEncode()}/state/read").jsonObject
         )
 
+    suspend fun archiveSession(sessionId: String): HarnessSessionState =
+        HarnessSessionState.fromJson(
+            request("POST", "/sessions/${sessionId.urlEncode()}/state/archive").jsonObject
+        )
+
     suspend fun createSession(model: String? = null): JsonObject {
         val session =
             request(

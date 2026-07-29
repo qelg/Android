@@ -184,9 +184,14 @@ private fun SessionPane(
     modifier: Modifier,
     selected: () -> Unit,
 ) {
+    var showArchived by rememberSaveable { mutableStateOf(false) }
     val allSessions =
-        remember(state.sessions, state.search, state.drafts) {
-            prioritizeSessionsWithDrafts(filterSessions(state.sessions, state.search), state.drafts)
+        remember(state.sessions, state.search, state.drafts, showArchived) {
+            val matching = filterSessions(state.sessions, state.search)
+            prioritizeSessionsWithDrafts(
+                filterArchivedSessions(matching, showArchived),
+                state.drafts,
+            )
         }
     val sessions = remember(allSessions) { rootSessions(allSessions) }
     val childCounts =
@@ -196,6 +201,15 @@ private fun SessionPane(
             title = { Text("Sessions") },
             windowInsets = WindowInsets(0, 0, 0, 0),
             actions = {
+                IconButton({ showArchived = !showArchived }) {
+                    Icon(
+                        Icons.Default.Archive,
+                        if (showArchived) "Hide archived sessions" else "Show archived sessions",
+                        tint =
+                            if (showArchived) MaterialTheme.colorScheme.primary
+                            else LocalContentColor.current,
+                    )
+                }
                 IconButton(vm::refresh) { Icon(Icons.Default.Refresh, "Refresh") }
                 IconButton(vm::checkForUpdate) {
                     Icon(Icons.Default.SystemUpdate, "Check for updates")
@@ -230,93 +244,135 @@ private fun SessionPane(
                 val updated = session.updatedAt?.let(::formatSessionUpdate)
                 val read = isSessionRead(session, state.readUpdates[session.id])
                 val children = childCounts[session] ?: 0
-                ListItem(
-                    headlineContent = { Text(session.title, maxLines = 1) },
-                    supportingContent = {
-                        Column {
-                            if (draft != null)
-                                Text(
-                                    "Draft · ${draft.trim()}",
-                                    maxLines = 2,
-                                    color = MaterialTheme.colorScheme.primary,
+                val archived = session.sessionState?.archived == true
+                val dismissState =
+                    rememberSwipeToDismissBoxState(
+                        confirmValueChange = { value ->
+                            if (value == SwipeToDismissBoxValue.EndToStart && !archived) {
+                                vm.archiveSession(session.id)
+                            }
+                            false
+                        }
+                    )
+                SwipeToDismissBox(
+                    state = dismissState,
+                    enableDismissFromStartToEnd = false,
+                    enableDismissFromEndToStart = !archived,
+                    backgroundContent = {
+                        Box(
+                            Modifier.fillMaxSize()
+                                .background(MaterialTheme.colorScheme.errorContainer)
+                                .padding(horizontal = 24.dp),
+                            contentAlignment = Alignment.CenterEnd,
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("Archive", color = MaterialTheme.colorScheme.onErrorContainer)
+                                Spacer(Modifier.width(8.dp))
+                                Icon(
+                                    Icons.Default.Archive,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onErrorContainer,
                                 )
-                            else session.preview?.let { Text(it, maxLines = 2) }
-                            session.source
-                                ?.takeIf { it.isNotBlank() && it != "mobile" }
-                                ?.let {
+                            }
+                        }
+                    },
+                ) {
+                    ListItem(
+                        headlineContent = { Text(session.title, maxLines = 1) },
+                        supportingContent = {
+                            Column {
+                                if (draft != null)
                                     Text(
-                                        it,
+                                        "Draft · ${draft.trim()}",
+                                        maxLines = 2,
+                                        color = MaterialTheme.colorScheme.primary,
+                                    )
+                                else session.preview?.let { Text(it, maxLines = 2) }
+                                session.source
+                                    ?.takeIf { it.isNotBlank() && it != "mobile" }
+                                    ?.let {
+                                        Text(
+                                            it,
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.tertiary,
+                                        )
+                                    }
+                                session.sessionState?.let {
+                                    Text(
+                                        formatSessionState(it),
                                         style = MaterialTheme.typography.labelSmall,
                                         color = MaterialTheme.colorScheme.tertiary,
                                     )
                                 }
-                            session.sessionState?.let {
-                                Text(
-                                    formatSessionState(it),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.tertiary,
-                                )
-                            }
-                            updated?.let {
-                                Text(
-                                    "Latest $it",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                    },
-                    leadingContent = {
-                        if (session.active) Badge { Text("LIVE") }
-                        else
-                            Icon(
-                                if (session.id == state.selectedId) Icons.AutoMirrored.Filled.Chat
-                                else Icons.Default.History,
-                                null,
-                            )
-                    },
-                    trailingContent = {
-                        Column(horizontalAlignment = Alignment.End) {
-                            if (draft != null) Badge { Text("DRAFT") }
-                            if (children > 0) {
-                                Badge {
-                                    Text("$children ${if (children == 1) "child" else "children"}")
+                                updated?.let {
+                                    Text(
+                                        "Latest $it",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
                                 }
                             }
-                            if (unread > 0) {
-                                Badge { Text("$unread unread") }
-                            } else if (session.sessionState?.unread == true) {
-                                Badge { Text("Unread") }
-                            } else if (session.sessionState?.read == "read") {
-                                Text(
-                                    "Read",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            } else if (session.sessionState == null && updated != null && !read) {
-                                Badge { Text("Unread") }
-                            } else if (session.sessionState == null && updated != null && read) {
-                                Text(
-                                    "Read",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                        }
-                    },
-                    modifier =
-                        Modifier.clickable {
-                            vm.showTree(session)
-                            selected()
                         },
-                    colors =
-                        ListItemDefaults.colors(
-                            containerColor =
-                                if (session.id == state.selectedId)
-                                    MaterialTheme.colorScheme.secondaryContainer
-                                else Color.Transparent
-                        ),
-                )
+                        leadingContent = {
+                            if (session.active) Badge { Text("LIVE") }
+                            else
+                                Icon(
+                                    if (session.id == state.selectedId)
+                                        Icons.AutoMirrored.Filled.Chat
+                                    else Icons.Default.History,
+                                    null,
+                                )
+                        },
+                        trailingContent = {
+                            Column(horizontalAlignment = Alignment.End) {
+                                if (archived) Badge { Text("ARCHIVED") }
+                                if (draft != null) Badge { Text("DRAFT") }
+                                if (children > 0) {
+                                    Badge {
+                                        Text(
+                                            "$children ${if (children == 1) "child" else "children"}"
+                                        )
+                                    }
+                                }
+                                if (unread > 0) {
+                                    Badge { Text("$unread unread") }
+                                } else if (session.sessionState?.unread == true) {
+                                    Badge { Text("Unread") }
+                                } else if (session.sessionState?.read == "read") {
+                                    Text(
+                                        "Read",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                } else if (
+                                    session.sessionState == null && updated != null && !read
+                                ) {
+                                    Badge { Text("Unread") }
+                                } else if (
+                                    session.sessionState == null && updated != null && read
+                                ) {
+                                    Text(
+                                        "Read",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                        },
+                        modifier =
+                            Modifier.clickable {
+                                vm.showTree(session)
+                                selected()
+                            },
+                        colors =
+                            ListItemDefaults.colors(
+                                containerColor =
+                                    if (session.id == state.selectedId)
+                                        MaterialTheme.colorScheme.secondaryContainer
+                                    else Color.Transparent
+                            ),
+                    )
+                }
             }
         }
     }

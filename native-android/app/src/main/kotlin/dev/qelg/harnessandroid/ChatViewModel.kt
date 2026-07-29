@@ -887,6 +887,34 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         client?.reconnectNow()
     }
 
+    fun archiveSession(sessionId: String) {
+        val api = client ?: return
+        val version = connectionVersion
+        viewModelScope.launch {
+            runCatching { api.archiveSession(sessionId) }
+                .onSuccess { archived ->
+                    if (client === api && connectionVersion == version) {
+                        _state.update { ui ->
+                            ui.copy(
+                                sessions =
+                                    ui.sessions.map { session ->
+                                        if (session.id == sessionId)
+                                            session.copy(
+                                                updatedAt = archived.updatedAt ?: session.updatedAt,
+                                                active = archived.running,
+                                                endReason = archived.outcome ?: session.endReason,
+                                                sessionState = archived,
+                                            )
+                                        else session
+                                    }
+                            )
+                        }
+                    }
+                }
+                .onFailure { if (client === api && connectionVersion == version) showError(it) }
+        }
+    }
+
     fun markRead(sessionId: String) {
         val current = state.value
         if (!canMarkSessionRead(current.historyLoadedFor, current.selectedId, sessionId)) return

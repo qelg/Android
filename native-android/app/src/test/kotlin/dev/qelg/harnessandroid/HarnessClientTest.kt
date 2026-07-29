@@ -59,15 +59,22 @@ class HarnessClientTest {
                 .setBody(
                     """{"session_id":"sess_1","state":"finished","read":"read","outcome":"stop","event_id":13,"created_at_ms":1752757201123}"""
                 ),
+            MockResponse()
+                .setBody(
+                    """{"session_id":"sess_1","state":"finished","read":"read","archive":"true","outcome":"stop","event_id":14,"created_at_ms":1752757202123}"""
+                ),
         ) { client, server ->
             val unread = client.sessionStates().single()
             val read = client.markSessionRead("session with space")
+            val archived = client.archiveSession("session with space")
 
             assertTrue(unread.unread)
             assertEquals("stop", unread.outcome)
             assertEquals("read", read.read)
+            assertTrue(archived.archived)
             assertEquals("/session-states", server.takeRequest().path)
             assertEquals("/sessions/session+with+space/state/read", server.takeRequest().path)
+            assertEquals("/sessions/session+with+space/state/archive", server.takeRequest().path)
         }
     }
 
