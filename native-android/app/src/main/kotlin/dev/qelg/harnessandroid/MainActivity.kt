@@ -3,6 +3,8 @@
 package dev.qelg.harnessandroid
 
 import android.Manifest
+import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.widget.TextView
 import androidx.activity.ComponentActivity
@@ -42,6 +44,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.qelg.harnessandroid.data.*
+import dev.qelg.harnessandroid.push.PushRegistration
 import dev.qelg.harnessandroid.voice.LocalAudioRecorder
 import dev.qelg.harnessandroid.voice.WhisperModel
 import java.text.NumberFormat
@@ -49,22 +52,70 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
+    private var requestedSessionId by mutableStateOf<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        requestedSessionId = intent.sessionId()
         enableEdgeToEdge()
         setContent {
             MaterialTheme(
                 colorScheme = if (isSystemInDarkTheme()) darkColorScheme() else lightColorScheme()
             ) {
-                HarnessApp()
+                HarnessApp(
+                    requestedSessionId,
+                    consumeRequestedSession = { requestedSessionId = null },
+                )
             }
         }
     }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        requestedSessionId = intent.sessionId()
+    }
+
+    companion object {
+        const val EXTRA_SESSION_ID = "dev.qelg.harnessandroid.SESSION_ID"
+    }
 }
 
+private fun Intent.sessionId(): String? =
+    getStringExtra(MainActivity.EXTRA_SESSION_ID)?.takeIf(String::isNotBlank)
+
 @Composable
-private fun HarnessApp(vm: ChatViewModel = viewModel()) {
+private fun HarnessApp(
+    requestedSessionId: String?,
+    consumeRequestedSession: () -> Unit,
+    vm: ChatViewModel = viewModel(),
+) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    var pushRegistrationRequested by rememberSaveable { mutableStateOf(false) }
+    val notificationPermission =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    LaunchedEffect(state.configured, state.connecting, state.error) {
+        if (
+            state.configured &&
+                !state.connecting &&
+                state.error == null &&
+                !pushRegistrationRequested
+        ) {
+            pushRegistrationRequested = true
+            if (Build.VERSION.SDK_INT >= 33) {
+                notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            PushRegistration.register(context as MainActivity)
+        }
+    }
+    LaunchedEffect(requestedSessionId, state.connecting, state.sessions) {
+        val sessionId = requestedSessionId ?: return@LaunchedEffect
+        if (state.connecting) return@LaunchedEffect
+        val session = state.sessions.firstOrNull { it.id == sessionId } ?: return@LaunchedEffect
+        if (state.selectedId != sessionId) vm.select(session)
+        consumeRequestedSession()
+    }
     Box(
         Modifier.fillMaxSize()
             .windowInsetsPadding(contentInsets(WindowInsets.safeDrawing, WindowInsets.ime))
@@ -128,6 +179,7 @@ private fun ConnectionScreen(connect: (ConnectionConfig) -> Unit) {
 @Composable
 private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
     var showSessions by rememberSaveable { mutableStateOf(state.selectedId == null) }
+    LaunchedEffect(state.selectedId) { if (state.selectedId != null) showSessions = false }
     val inTree = state.treeParentId != null
     val inChat = state.selectedId != null
     val treeSessions =
