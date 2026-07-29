@@ -228,6 +228,49 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
 }
 
 @Composable
+internal fun SessionArchiveSwipeBox(
+    archived: Boolean,
+    onArchive: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    val dismissState =
+        rememberSwipeToDismissBoxState(
+            confirmValueChange = { value ->
+                if (value == SwipeToDismissBoxValue.EndToStart && !archived) onArchive()
+                false
+            }
+        )
+    SwipeToDismissBox(
+        state = dismissState,
+        modifier = Modifier.fillMaxWidth(),
+        enableDismissFromStartToEnd = false,
+        enableDismissFromEndToStart = !archived,
+        backgroundContent = {
+            if (dismissState.dismissDirection == SwipeToDismissBoxValue.EndToStart) {
+                Box(
+                    Modifier.fillMaxSize()
+                        .background(MaterialTheme.colorScheme.errorContainer)
+                        .padding(horizontal = 24.dp),
+                    contentAlignment = Alignment.CenterEnd,
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Archive", color = MaterialTheme.colorScheme.onErrorContainer)
+                        Spacer(Modifier.width(8.dp))
+                        Icon(
+                            Icons.Default.Archive,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                    }
+                }
+            }
+        },
+    ) {
+        content()
+    }
+}
+
+@Composable
 private fun SessionPane(
     state: ChatUiState,
     vm: ChatViewModel,
@@ -295,37 +338,9 @@ private fun SessionPane(
                 val read = isSessionRead(session, state.readUpdates[session.id])
                 val children = childCounts[session] ?: 0
                 val archived = session.sessionState?.archived == true
-                val dismissState =
-                    rememberSwipeToDismissBoxState(
-                        confirmValueChange = { value ->
-                            if (value == SwipeToDismissBoxValue.EndToStart && !archived) {
-                                vm.archiveSession(session.id)
-                            }
-                            false
-                        }
-                    )
-                SwipeToDismissBox(
-                    state = dismissState,
-                    enableDismissFromStartToEnd = false,
-                    enableDismissFromEndToStart = !archived,
-                    backgroundContent = {
-                        Box(
-                            Modifier.fillMaxSize()
-                                .background(MaterialTheme.colorScheme.errorContainer)
-                                .padding(horizontal = 24.dp),
-                            contentAlignment = Alignment.CenterEnd,
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text("Archive", color = MaterialTheme.colorScheme.onErrorContainer)
-                                Spacer(Modifier.width(8.dp))
-                                Icon(
-                                    Icons.Default.Archive,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onErrorContainer,
-                                )
-                            }
-                        }
-                    },
+                SessionArchiveSwipeBox(
+                    archived = archived,
+                    onArchive = { vm.archiveSession(session.id) },
                 ) {
                     ListItem(
                         headlineContent = { Text(session.title, maxLines = 1) },
