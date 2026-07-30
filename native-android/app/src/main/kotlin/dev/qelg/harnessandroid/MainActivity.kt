@@ -966,6 +966,7 @@ private fun ContextUsageBar(usage: TokenUsageState, onClick: () -> Unit) {
     val bar = usage.usageBarData() ?: return
     val context = usage.context
     val window = bar.context
+    val cumulative = usage.cumulative
     if (window == null) {
         Surface(onClick = onClick, color = MaterialTheme.colorScheme.surfaceContainerLow) {
             Row(
@@ -975,7 +976,11 @@ private fun ContextUsageBar(usage: TokenUsageState, onClick: () -> Unit) {
                 Text("Usage", style = MaterialTheme.typography.labelMedium)
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "${formatTokenCount(bar.totalTokens ?: 0L)} tokens",
+                    buildString {
+                        append(formatTokenCount(bar.totalTokens ?: 0L))
+                        append(" tokens")
+                        cumulative?.totalCost?.let { append(" · ").append(formatCost(it)) }
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -994,7 +999,11 @@ private fun ContextUsageBar(usage: TokenUsageState, onClick: () -> Unit) {
                 Text("Current context", style = MaterialTheme.typography.labelMedium)
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "${formatTokenCount(used)} tokens",
+                    buildString {
+                        append(formatTokenCount(used))
+                        append(" tokens")
+                        cumulative?.totalCost?.let { append(" · ").append(formatCost(it)) }
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1017,7 +1026,15 @@ private fun ContextUsageBar(usage: TokenUsageState, onClick: () -> Unit) {
                 Text("Context", style = MaterialTheme.typography.labelMedium)
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "${formatTokenCount(used)} / ${formatTokenCount(max)} · $percent%",
+                    buildString {
+                        append(formatTokenCount(used))
+                        append(" / ")
+                        append(formatTokenCount(max))
+                        append(" · ")
+                        append(percent)
+                        append("%")
+                        cumulative?.totalCost?.let { append(" · ").append(formatCost(it)) }
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1613,6 +1630,13 @@ private fun TokenUsageBottomSheet(
                     "${formatTokenCount(cumulative.totalTokens)} tokens",
                     style = MaterialTheme.typography.headlineSmall,
                 )
+                cumulative.totalCost?.let { cost ->
+                    Text(
+                        "${formatCost(cost)} total",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
                 UsageDetailRow("Prompt processed", cumulative.processedInputTokens)
                 UsageDetailRow("Uncached input", cumulative.inputTokens)
                 UsageDetailRow("Read from cache", cumulative.cacheReadTokens)
@@ -1623,6 +1647,7 @@ private fun TokenUsageBottomSheet(
                     buildString {
                         append("${cumulative.apiCalls} model calls")
                         cumulative.cacheHitPercent?.let { append(" · $it% cache hit") }
+                        cumulative.totalCost?.let { append(" · ${formatCost(it)}") }
                     },
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1776,6 +1801,15 @@ private fun Long.percentOf(total: Long): Int? =
     if (total > 0L) ((toDouble() / total) * 100).toInt().coerceIn(0, 100) else null
 
 private fun formatTokenCount(value: Long): String = NumberFormat.getIntegerInstance().format(value)
+
+private fun formatCost(cost: Double): String {
+    val s = "$%.4f".format(cost)
+    // Trim trailing zeros but keep at least 2 decimal places
+    return if (s.endsWith('0')) {
+        val trimmed = s.trimEnd('0').trimEnd('.')
+        if (trimmed == "$0") "$0.00" else trimmed
+    } else s
+}
 
 internal fun timelineKey(index: Int, item: ChatItem): String =
     when (item) {

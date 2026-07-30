@@ -64,6 +64,8 @@ data class CumulativeTokenUsage(
     val cacheWriteTokens: Long,
     val reasoningTokens: Long,
     val apiCalls: Int,
+    val inputCost: Double? = null,
+    val outputCost: Double? = null,
     private val cacheMetricsReported: Boolean,
 ) {
     val processedInputTokens: Long
@@ -71,6 +73,13 @@ data class CumulativeTokenUsage(
 
     val totalTokens: Long
         get() = processedInputTokens + outputTokens
+
+    val totalCost: Double?
+        get() {
+            val i = inputCost ?: return outputCost
+            val o = outputCost ?: return i
+            return i + o
+        }
 
     val cacheHitPercent: Int?
         get() =
@@ -88,10 +97,17 @@ data class CumulativeTokenUsage(
             cacheWriteTokens = cacheWriteTokens + other.cacheWriteTokens,
             reasoningTokens = reasoningTokens + other.reasoningTokens,
             apiCalls = apiCalls + other.apiCalls,
+            inputCost = _addNullableDoubles(inputCost, other.inputCost),
+            outputCost = _addNullableDoubles(outputCost, other.outputCost),
             cacheMetricsReported = cacheMetricsReported || other.cacheMetricsReported,
         )
 
     companion object {
+        private fun _addNullableDoubles(a: Double?, b: Double?): Double? {
+            if (a == null) return b
+            if (b == null) return a
+            return a + b
+        }
         fun fromJsonOrNull(value: JsonObject): CumulativeTokenUsage? =
             if (
                 listOf(
@@ -115,6 +131,8 @@ data class CumulativeTokenUsage(
                 cacheWriteTokens = value.long("cache_write_tokens"),
                 reasoningTokens = value.long("reasoning_tokens"),
                 apiCalls = value.int("api_call_count"),
+                inputCost = value["input_cost"]?.jsonPrimitive?.doubleOrNull,
+                outputCost = value["output_cost"]?.jsonPrimitive?.doubleOrNull,
                 cacheMetricsReported =
                     value.containsKey("cache_read_tokens") ||
                         value.containsKey("cache_write_tokens"),
@@ -144,6 +162,8 @@ data class CumulativeTokenUsage(
                 cacheWriteTokens = cacheWrite,
                 reasoningTokens = outputDetails.long("reasoning_tokens"),
                 apiCalls = 1,
+                inputCost = providerCost(value, "input") ?: providerCost(value, "prompt"),
+                outputCost = providerCost(value, "output") ?: providerCost(value, "completion"),
                 cacheMetricsReported =
                     inputDetails.containsKey("cached_tokens") ||
                         inputDetails.containsKey("cache_read_tokens") ||
@@ -151,6 +171,16 @@ data class CumulativeTokenUsage(
             )
         }
     }
+}
+
+private fun providerCost(value: JsonObject, prefix: String): Double? {
+    // Some providers (e.g. OpenRouter) report cost in the usage object as
+    // "input_cost"/"output_cost" or "prompt_cost"/"completion_cost".
+    val costKey = "${prefix}_cost"
+    val cost = value[costKey]?.jsonPrimitive?.doubleOrNull
+    if (cost != null) return cost
+    // Some providers embed cost as a string
+    return value[costKey]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
 }
 
 data class HarnessUsageSnapshot(
