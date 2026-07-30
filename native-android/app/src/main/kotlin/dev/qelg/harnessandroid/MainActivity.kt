@@ -34,6 +34,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -2024,15 +2025,34 @@ private fun MessageCard(message: ChatItem.Message, showReasoning: Boolean) {
     }
 }
 
+data class ReasoningDisplayLine(val text: String, val bold: Boolean)
+
+internal fun reasoningDisplayLines(text: String): List<ReasoningDisplayLine> =
+    text.lines().map { raw ->
+        val line = raw.trim()
+        val bold = line.length >= 4 && line.startsWith("**") && line.endsWith("**")
+        ReasoningDisplayLine(
+            text = if (bold) line.substring(2, line.length - 2).trim() else line,
+            bold = bold,
+        )
+    }
+
 @Composable
 private fun ReasoningTrace(text: String, summary: Boolean) {
-    Column(Modifier.padding(vertical = 2.dp)) {
-        Text(
-            if (summary) "Reasoning summary" else "Reasoning",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.primary,
-        )
-        SelectionContainer { Text(text, style = MaterialTheme.typography.bodySmall) }
+    val lines = remember(text) { reasoningDisplayLines(text) }
+    SelectionContainer {
+        Column(Modifier.padding(vertical = 2.dp)) {
+            lines.forEach { line ->
+                Text(
+                    line.text,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = if (line.bold) FontWeight.Bold else FontWeight.Normal,
+                    color =
+                        if (summary) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
     }
 }
 
@@ -2069,9 +2089,18 @@ private fun ToolSummaryCard(
             if (expanded)
                 group.operations.forEach { operation ->
                     when (operation) {
-                        is ChatItem.Tool -> ToolCard(operation, onOpenDetails = onOpenDetails)
+                        is ChatItem.Tool ->
+                            ToolCard(
+                                operation,
+                                showReasoning = showReasoning,
+                                onOpenDetails = onOpenDetails,
+                            )
                         is ChatItem.ParallelToolGroup ->
-                            ParallelToolGroupCard(operation, onOpenDetails = onOpenDetails)
+                            ParallelToolGroupCard(
+                                operation,
+                                showReasoning = showReasoning,
+                                onOpenDetails = onOpenDetails,
+                            )
                         else -> Unit
                     }
                 }

@@ -1,6 +1,7 @@
 package dev.qelg.harnessandroid
 
 import dev.qelg.harnessandroid.data.ChatItem
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -23,6 +24,17 @@ class MarkdownRenderingTest {
     @Test
     fun userMessageStaysPlainText() {
         assertFalse(shouldRenderMarkdown(ChatItem.Message("user", "**literal**")))
+    }
+
+    @Test
+    fun reasoningSummaryMarkdownMarkersBecomeBoldText() {
+        assertEquals(
+            listOf(
+                ReasoningDisplayLine("Inspecting files", bold = true),
+                ReasoningDisplayLine("Then run tests", bold = false),
+            ),
+            reasoningDisplayLines("**Inspecting files**\nThen run tests"),
+        )
     }
 
     @Test
