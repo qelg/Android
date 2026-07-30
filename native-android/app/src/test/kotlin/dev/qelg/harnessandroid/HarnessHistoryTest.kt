@@ -19,6 +19,36 @@ class HarnessHistoryTest {
     }
 
     @Test
+    fun codexReasoningSummaryIsKeptSeparateFromTheAnswer() {
+        val row =
+            Json.parseToJsonElement(
+                    """{"id":5,"role":"assistant","content":[{"type":"reasoning","summary":[{"type":"summary_text","text":"Checked the implementation."}]},{"type":"message","content":[{"type":"output_text","text":"Success"}]}]}"""
+                )
+                .jsonObject
+
+        val message = messagesFromHistoryRow(row).single() as ChatItem.Message
+
+        assertEquals("Success", message.text)
+        assertEquals("Checked the implementation.", message.reasoning)
+        assertEquals(true, message.reasoningIsSummary)
+    }
+
+    @Test
+    fun openRouterReasoningIsKeptSeparateFromTheAnswer() {
+        val row =
+            Json.parseToJsonElement(
+                    """{"id":6,"role":"assistant","content":[{"role":"assistant","reasoning":"Inspect the code.","content":"Done"}]}"""
+                )
+                .jsonObject
+
+        val message = messagesFromHistoryRow(row).single() as ChatItem.Message
+
+        assertEquals("Done", message.text)
+        assertEquals("Inspect the code.", message.reasoning)
+        assertEquals(false, message.reasoningIsSummary)
+    }
+
+    @Test
     fun toolRequestAndResultKeepNameAndParameters() {
         val rows =
             listOf(
