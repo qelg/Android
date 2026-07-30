@@ -637,6 +637,8 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                                 )
                         }
                         api.watchSession(session.id, historyRows.latestEventId())
+                        runCatching { refreshModels(api, session, connectionVersion) }
+                            .onFailure(::showError)
                         refreshTokenUsage()
                     }
                     .onFailure { if (selectionVersion == version && client === api) showError(it) }

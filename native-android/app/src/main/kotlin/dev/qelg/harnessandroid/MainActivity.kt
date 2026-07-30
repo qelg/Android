@@ -1976,8 +1976,12 @@ private fun TimelineItem(
     }
 }
 
+internal fun shouldDisplayMessage(message: ChatItem.Message, showReasoning: Boolean): Boolean =
+    message.text.isNotBlank() || (showReasoning && !message.reasoning.isNullOrBlank())
+
 @Composable
 private fun MessageCard(message: ChatItem.Message, showReasoning: Boolean) {
+    if (!shouldDisplayMessage(message, showReasoning)) return
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = if (message.role == "user") Arrangement.End else Arrangement.Start,

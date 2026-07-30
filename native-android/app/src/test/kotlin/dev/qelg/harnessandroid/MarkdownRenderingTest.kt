@@ -24,4 +24,18 @@ class MarkdownRenderingTest {
     fun userMessageStaysPlainText() {
         assertFalse(shouldRenderMarkdown(ChatItem.Message("user", "**literal**")))
     }
+
+    @Test
+    fun hiddenReasoningOnlyMessagesDoNotRenderEmptyBubbles() {
+        val message =
+            ChatItem.Message(
+                role = "assistant",
+                text = "",
+                reasoning = "Internal summary",
+                reasoningIsSummary = true,
+            )
+
+        assertFalse(shouldDisplayMessage(message, showReasoning = false))
+        assertTrue(shouldDisplayMessage(message, showReasoning = true))
+    }
 }
