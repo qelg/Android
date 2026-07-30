@@ -19,6 +19,7 @@ import dev.qelg.harnessandroid.data.groupTimeline
 import dev.qelg.harnessandroid.data.isSafeExternalUrl
 import dev.qelg.harnessandroid.data.isSessionUpdateRead
 import dev.qelg.harnessandroid.data.modelCatalogForSession
+import dev.qelg.harnessandroid.data.modelSelectionFromSessionInfo
 import dev.qelg.harnessandroid.data.modelSwitchValue
 import dev.qelg.harnessandroid.data.prettyToolValue
 import dev.qelg.harnessandroid.data.prioritizeSessionsWithDrafts
@@ -689,6 +690,27 @@ class ModelsTest {
 
         assertEquals(listOf("anthropic"), catalog.filtered("ANTHROPIC").map { it.slug })
         assertEquals(listOf("openai-codex"), catalog.filtered("5.6-sol").map { it.slug })
+    }
+
+    @Test
+    fun sessionInfoKeepsThinkingAndReasoningDisplayPreferences() {
+        val current =
+            ModelSelection(
+                "chatgpt-codex",
+                "old-model",
+                ThinkingLevel.High,
+                reasoningSummary = true,
+            )
+
+        assertEquals(
+            ModelSelection(
+                "chatgpt-codex",
+                "new-model",
+                ThinkingLevel.High,
+                reasoningSummary = true,
+            ),
+            modelSelectionFromSessionInfo("chatgpt-codex", "new-model", current),
+        )
     }
 
     @Test

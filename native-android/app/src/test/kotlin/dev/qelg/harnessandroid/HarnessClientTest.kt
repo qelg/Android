@@ -208,7 +208,7 @@ class HarnessClientTest {
         val body =
             listOf(
                     "event: chat.message.assistant.created",
-                    "data: {\"id\":2,\"payload\":{\"content\":[{\"type\":\"function_call\",\"name\":\"podman-shell\",\"arguments\":\"{\\\"cmd\\\":\\\"pwd\\\"}\"}]}}",
+                    "data: {\"id\":2,\"payload\":{\"content\":[{\"type\":\"reasoning\",\"content\":[],\"summary\":[{\"type\":\"summary_text\",\"text\":\"Inspecting files\"}]},{\"type\":\"function_call\",\"name\":\"podman-shell\",\"arguments\":\"{\\\"cmd\\\":\\\"pwd\\\"}\"}]}}",
                     "",
                     "event: tool.call.requested",
                     "data: {\"id\":3,\"payload\":{\"tool\":\"podman-shell\",\"run_id\":\"call_1\",\"input\":{\"cmd\":\"pwd\"}}}",
@@ -225,21 +225,21 @@ class HarnessClientTest {
         server(MockResponse().setHeader("Content-Type", "text/event-stream").setBody(body)) {
             client,
             _ ->
-            val collected = async { client.events.take(3).toList() }
+            val collected = async { client.events.take(4).toList() }
             client.watchSession("sess_1")
             val events = withTimeout(5_000) { collected.await() }
             assertEquals(
-                listOf("tool.start", "tool.complete", "message.complete"),
+                listOf("message.reasoning", "tool.start", "tool.complete", "message.complete"),
                 events.map { it.type },
             )
-            assertEquals("podman-shell", events[0].payload["name"]?.jsonPrimitive?.content)
+            assertEquals("podman-shell", events[1].payload["name"]?.jsonPrimitive?.content)
             assertEquals(
                 "pwd",
-                events[0].payload["arguments"]?.jsonObject?.get("cmd")?.jsonPrimitive?.content,
+                events[1].payload["arguments"]?.jsonObject?.get("cmd")?.jsonPrimitive?.content,
             )
             assertEquals(
                 "The directory is /work.",
-                events[2].payload["text"]?.jsonPrimitive?.content,
+                events[3].payload["text"]?.jsonPrimitive?.content,
             )
         }
     }

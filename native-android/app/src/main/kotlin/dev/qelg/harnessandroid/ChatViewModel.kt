@@ -1180,9 +1180,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 val liveUsage = LiveTokenUsage.fromSessionInfo(JsonObject(event.payload))
                 _state.update {
                     val selected =
-                        if (!model.isNullOrBlank() && !provider.isNullOrBlank())
-                            ModelSelection(provider, model)
-                        else it.modelCatalog.selected
+                        modelSelectionFromSessionInfo(provider, model, it.modelCatalog.selected)
                     val previousUsage =
                         if (storedChanged) it.tokenUsage?.clearPersistedTokenDetails()
                         else it.tokenUsage
@@ -1217,6 +1215,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 reloadHistory()
                 scheduleRefresh()
             }
+            "message.reasoning" -> reloadHistory()
             "message.delta" ->
                 appendDelta(event.payload["text"]?.jsonPrimitive?.contentOrNull.orEmpty())
             "message.complete" -> {

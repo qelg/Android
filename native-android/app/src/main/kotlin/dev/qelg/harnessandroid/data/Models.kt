@@ -228,6 +228,20 @@ data class ModelSelection(
     val reasoningSummary: Boolean = false,
 )
 
+fun modelSelectionFromSessionInfo(
+    provider: String?,
+    model: String?,
+    current: ModelSelection?,
+): ModelSelection? =
+    if (!provider.isNullOrBlank() && !model.isNullOrBlank())
+        ModelSelection(
+            provider,
+            model,
+            thinkingLevel = current?.thinkingLevel,
+            reasoningSummary = current?.reasoningSummary ?: false,
+        )
+    else current
+
 data class ModelOption(
     val id: String,
     val unavailable: Boolean = false,
