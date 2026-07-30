@@ -108,6 +108,7 @@ data class CumulativeTokenUsage(
             if (b == null) return a
             return a + b
         }
+
         fun fromJsonOrNull(value: JsonObject): CumulativeTokenUsage? =
             if (
                 listOf(
