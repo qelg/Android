@@ -360,12 +360,19 @@ sealed interface ChatItem {
         val durationEstimated: Boolean = false,
         val deriveDuration: Boolean = true,
         val batchId: String? = null,
+        val reasoning: String? = null,
+        val reasoningIsSummary: Boolean = false,
     ) : ChatItem {
         val final: Boolean
             get() = state in setOf("completed", "failed", "cancelled")
     }
 
-    data class ParallelToolGroup(val id: String, val tools: List<Tool>) : ChatItem {
+    data class ParallelToolGroup(
+        val id: String,
+        val tools: List<Tool>,
+        val reasoning: String? = null,
+        val reasoningIsSummary: Boolean = false,
+    ) : ChatItem {
         val final: Boolean
             get() = tools.all(Tool::final)
     }
@@ -445,6 +452,64 @@ fun toolCountBreakdown(operations: List<ChatItem>): Map<String, Int> {
     return counts
 }
 
+fun attachReasoningToToolOperations(items: List<ChatItem>): List<ChatItem> {
+    val result = mutableListOf<ChatItem>()
+    val pending = mutableListOf<ChatItem.Message>()
+
+    fun flushPending() {
+        result += pending
+        pending.clear()
+    }
+
+    fun reasoning(): Pair<String, Boolean>? =
+        pending
+            .mapNotNull { message ->
+                message.reasoning?.takeIf(String::isNotBlank)?.let {
+                    it to message.reasoningIsSummary
+                }
+            }
+            .takeIf { it.isNotEmpty() }
+            ?.let { parts -> parts.joinToString("\n") { it.first } to parts.all { it.second } }
+
+    items.forEach { item ->
+        if (item is ChatItem.Message && item.text.isBlank() && !item.reasoning.isNullOrBlank()) {
+            pending += item
+            return@forEach
+        }
+        when (item) {
+            is ChatItem.Tool -> {
+                val attached = reasoning()
+                result +=
+                    if (attached == null) item
+                    else item.copy(reasoning = attached.first, reasoningIsSummary = attached.second)
+                pending.clear()
+            }
+            is ChatItem.ParallelToolGroup -> {
+                val attached = reasoning()
+                result +=
+                    if (attached == null) item
+                    else item.copy(reasoning = attached.first, reasoningIsSummary = attached.second)
+                pending.clear()
+            }
+            else -> {
+                flushPending()
+                result += item
+            }
+        }
+    }
+    flushPending()
+    return result
+}
+
+fun operationReasoning(item: ChatItem): Pair<String, Boolean>? =
+    when (item) {
+        is ChatItem.Tool ->
+            item.reasoning?.takeIf(String::isNotBlank)?.let { it to item.reasoningIsSummary }
+        is ChatItem.ParallelToolGroup ->
+            item.reasoning?.takeIf(String::isNotBlank)?.let { it to item.reasoningIsSummary }
+        else -> null
+    }
+
 fun groupTimeline(items: List<ChatItem>, minimumGroupSize: Int = 4): List<ChatItem> {
     val result = mutableListOf<ChatItem>()
     val completed = mutableListOf<ChatItem>()
@@ -489,6 +554,9 @@ private fun mergeTool(started: ChatItem.Tool, update: ChatItem.Tool): ChatItem.T
         durationEstimated = update.durationEstimated || started.durationEstimated,
         deriveDuration = update.deriveDuration,
         batchId = update.batchId ?: started.batchId,
+        reasoning = update.reasoning ?: started.reasoning,
+        reasoningIsSummary =
+            if (update.reasoning != null) update.reasoningIsSummary else started.reasoningIsSummary,
     )
 }
 

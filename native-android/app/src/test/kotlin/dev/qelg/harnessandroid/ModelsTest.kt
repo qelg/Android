@@ -10,6 +10,7 @@ import dev.qelg.harnessandroid.data.ThinkingLevel
 import dev.qelg.harnessandroid.data.ToolValuePreview
 import dev.qelg.harnessandroid.data.ToolValueRow
 import dev.qelg.harnessandroid.data.applySessionModelOverrides
+import dev.qelg.harnessandroid.data.attachReasoningToToolOperations
 import dev.qelg.harnessandroid.data.canClearDraft
 import dev.qelg.harnessandroid.data.canMarkSessionRead
 import dev.qelg.harnessandroid.data.confirmedReadAt
@@ -21,6 +22,7 @@ import dev.qelg.harnessandroid.data.isSessionUpdateRead
 import dev.qelg.harnessandroid.data.modelCatalogForSession
 import dev.qelg.harnessandroid.data.modelSelectionFromSessionInfo
 import dev.qelg.harnessandroid.data.modelSwitchValue
+import dev.qelg.harnessandroid.data.operationReasoning
 import dev.qelg.harnessandroid.data.prettyToolValue
 import dev.qelg.harnessandroid.data.prioritizeSessionsWithDrafts
 import dev.qelg.harnessandroid.data.sessionModelForLineage
@@ -37,6 +39,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -459,6 +462,72 @@ class ModelsTest {
         val first = ChatItem.Tool("1", "terminal", "completed", result = "ok")
         val second = ChatItem.Tool("2", "read_file", "running", arguments = "path")
         assertEquals(listOf(first, second), upsertTool(listOf(first), second))
+    }
+
+    @Test
+    fun reasoningOnlyMessageAttachesToTheFollowingSingleTool() {
+        val items =
+            attachReasoningToToolOperations(
+                listOf(
+                    ChatItem.Message(
+                        "assistant",
+                        "",
+                        reasoning = "Inspect the repository",
+                        reasoningIsSummary = true,
+                    ),
+                    ChatItem.Tool("1", "terminal", "completed"),
+                )
+            )
+
+        val tool = items.single() as ChatItem.Tool
+        assertEquals("Inspect the repository", tool.reasoning)
+        assertTrue(tool.reasoningIsSummary)
+    }
+
+    @Test
+    fun reasoningOnlyMessageAttachesToTheFollowingParallelRound() {
+        val parallel =
+            ChatItem.ParallelToolGroup(
+                "batch",
+                listOf(
+                    ChatItem.Tool("1", "terminal", "completed"),
+                    ChatItem.Tool("2", "read_file", "completed"),
+                ),
+            )
+
+        val items =
+            attachReasoningToToolOperations(
+                listOf(ChatItem.Message("assistant", "", reasoning = "Read both files"), parallel)
+            )
+
+        val attached = items.single() as ChatItem.ParallelToolGroup
+        assertEquals("Read both files", attached.reasoning)
+        assertFalse(attached.reasoningIsSummary)
+    }
+
+    @Test
+    fun groupedToolsExposeTheLastAttachedReasoningInTheirHeader() {
+        val rounds =
+            (1..4).flatMap { round ->
+                listOf<ChatItem>(
+                    ChatItem.Message(
+                        "assistant",
+                        "",
+                        reasoning = "Plan $round",
+                        reasoningIsSummary = true,
+                    ),
+                    ChatItem.Tool("$round", "terminal", "completed"),
+                )
+            }
+
+        val group =
+            groupTimeline(attachReasoningToToolOperations(rounds)).single() as ChatItem.ToolGroup
+
+        assertEquals(4, group.callCount)
+        assertEquals(
+            "Plan 4" to true,
+            group.operations.asReversed().firstNotNullOf(::operationReasoning),
+        )
     }
 
     @Test
