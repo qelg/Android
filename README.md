@@ -12,6 +12,7 @@ A native Kotlin/Jetpack Compose Android client for [qelg/harness](https://github
 - Load direct child sessions from the Harness child-session API, browse them from session details, and open their chats
 - Load durable message history and stream assistant/tool activity over Harness SSE
 - Select a provider/model and thinking level (none, low, medium, or high) for a session
+- Optionally request ChatGPT Codex reasoning summaries and show available reasoning in the timeline
 - Keep per-session timelines, drafts, and read state while switching between chats
 - Store an optional bearer token using Android Keystore
 - Discover providers and tools exposed by Harness

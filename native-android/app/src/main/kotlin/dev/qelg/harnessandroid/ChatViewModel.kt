@@ -1464,8 +1464,17 @@ internal fun messagesFromHistoryRow(row: JsonObject): List<ChatItem> {
     val raw = row["content"] ?: row["text"]
     val text = raw.assistantText()
     val result = mutableListOf<ChatItem>()
-    if (text.isNotBlank())
-        result += ChatItem.Message(role, text, row.string("id"), timestamp = timestamp)
+    val reasoning = raw.reasoningContent()
+    if (text.isNotBlank() || reasoning != null)
+        result +=
+            ChatItem.Message(
+                role,
+                text,
+                row.string("id"),
+                timestamp = timestamp,
+                reasoning = reasoning?.text,
+                reasoningIsSummary = reasoning?.isSummary ?: false,
+            )
     val tools =
         (row["tool_calls"] as? JsonArray)
             ?.mapNotNull { it as? JsonObject }

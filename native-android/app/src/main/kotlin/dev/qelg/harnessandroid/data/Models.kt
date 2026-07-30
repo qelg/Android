@@ -225,6 +225,7 @@ data class ModelSelection(
     val provider: String,
     val model: String,
     val thinkingLevel: ThinkingLevel? = null,
+    val reasoningSummary: Boolean = false,
 )
 
 data class ModelOption(
@@ -249,7 +250,12 @@ data class ModelCatalog(
         return copy(
             selected =
                 match?.let { (provider, option) ->
-                    ModelSelection(provider.slug, option.id, selected?.thinkingLevel)
+                    ModelSelection(
+                        provider.slug,
+                        option.id,
+                        selected?.thinkingLevel,
+                        selected?.reasoningSummary ?: false,
+                    )
                 }
         )
     }
@@ -303,6 +309,7 @@ data class ModelCatalog(
                             selectedProvider,
                             selectedModel,
                             ThinkingLevel.fromApiValue(value.string("thinking_level")),
+                            value["reasoning_summary"]?.jsonPrimitive?.booleanOrNull ?: false,
                         )
                     else null,
                 providers = providers,
@@ -322,6 +329,8 @@ sealed interface ChatItem {
         val timestamp: java.time.Instant? = null,
         val uiKey: String? = null,
         val pendingCanonical: Boolean = false,
+        val reasoning: String? = null,
+        val reasoningIsSummary: Boolean = false,
     ) : ChatItem
 
     data class Tool(

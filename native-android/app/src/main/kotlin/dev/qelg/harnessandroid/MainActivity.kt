@@ -728,7 +728,10 @@ private fun ChatPane(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     itemsIndexed(blocks, key = ::timelineKey) { _, item ->
-                        TimelineItem(item) { tool ->
+                        TimelineItem(
+                            item,
+                            showReasoning = state.modelCatalog.selected?.reasoningSummary == true,
+                        ) { tool ->
                             fullScreenDetail = FullScreenDetail.ToolCall(tool)
                         }
                     }
@@ -928,6 +931,7 @@ private fun ChatPane(
             catalog = state.modelCatalog,
             loading = state.modelLoading,
             onRefresh = vm::refreshModels,
+            onConfigure = vm::selectModel,
             onSelect = {
                 vm.selectModel(it)
                 showModels = false
@@ -1806,6 +1810,7 @@ private fun ModelPickerDialog(
     catalog: ModelCatalog,
     loading: Boolean,
     onRefresh: () -> Unit,
+    onConfigure: (ModelSelection) -> Unit,
     onSelect: (ModelSelection) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -1832,10 +1837,36 @@ private fun ModelPickerDialog(
                         FilterChip(
                             selected = catalog.selected?.thinkingLevel == level,
                             onClick = {
-                                catalog.selected?.let { onSelect(it.copy(thinkingLevel = level)) }
+                                catalog.selected?.let {
+                                    onConfigure(it.copy(thinkingLevel = level))
+                                }
                             },
                             enabled = catalog.selected != null && !loading,
                             label = { Text(level.displayName) },
+                        )
+                    }
+                }
+                catalog.selected?.let { selection ->
+                    Row(
+                        Modifier.fillMaxWidth().clickable(enabled = !loading) {
+                            onConfigure(
+                                selection.copy(reasoningSummary = !selection.reasoningSummary)
+                            )
+                        },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Show reasoning", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "Request summaries from ChatGPT Codex and show available reasoning",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = selection.reasoningSummary,
+                            onCheckedChange = null,
+                            enabled = !loading,
                         )
                     }
                 }
@@ -1872,6 +1903,7 @@ private fun ModelPickerDialog(
                                         provider.slug,
                                         model.id,
                                         catalog.selected?.thinkingLevel,
+                                        catalog.selected?.reasoningSummary ?: false,
                                     )
                                 val selected = selection == catalog.selected
                                 ListItem(
@@ -1925,9 +1957,13 @@ internal fun currentToolForDetail(items: List<ChatItem>, opened: ChatItem.Tool):
 }
 
 @Composable
-private fun TimelineItem(item: ChatItem, onOpenToolDetails: (ChatItem.Tool) -> Unit) {
+private fun TimelineItem(
+    item: ChatItem,
+    showReasoning: Boolean,
+    onOpenToolDetails: (ChatItem.Tool) -> Unit,
+) {
     when (item) {
-        is ChatItem.Message -> MessageCard(item)
+        is ChatItem.Message -> MessageCard(item, showReasoning)
         is ChatItem.Tool -> ToolCard(item, onOpenDetails = onOpenToolDetails)
         is ChatItem.ParallelToolGroup ->
             ParallelToolGroupCard(item, onOpenDetails = onOpenToolDetails)
@@ -1941,7 +1977,7 @@ private fun TimelineItem(item: ChatItem, onOpenToolDetails: (ChatItem.Tool) -> U
 }
 
 @Composable
-private fun MessageCard(message: ChatItem.Message) {
+private fun MessageCard(message: ChatItem.Message, showReasoning: Boolean) {
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = if (message.role == "user") Arrangement.End else Arrangement.Start,
@@ -1954,8 +1990,21 @@ private fun MessageCard(message: ChatItem.Message) {
             modifier = Modifier.widthIn(max = 680.dp),
         ) {
             Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                if (shouldRenderMarkdown(message)) MarkdownText(message.text)
-                else SelectionContainer { Text(message.text) }
+                if (showReasoning && !message.reasoning.isNullOrBlank()) {
+                    Text(
+                        if (message.reasoningIsSummary) "Reasoning summary" else "Reasoning",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    SelectionContainer {
+                        Text(message.reasoning, style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (message.text.isNotBlank()) Spacer(Modifier.height(8.dp))
+                }
+                if (message.text.isNotBlank()) {
+                    if (shouldRenderMarkdown(message)) MarkdownText(message.text)
+                    else SelectionContainer { Text(message.text) }
+                }
                 message.timestamp?.let {
                     ClockText(it, Modifier.align(Alignment.End).padding(top = 2.dp))
                 }

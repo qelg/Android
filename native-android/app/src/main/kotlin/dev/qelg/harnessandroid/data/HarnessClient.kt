@@ -62,6 +62,7 @@ class HarnessClient(
                             selectedProvider,
                             selectedModel,
                             ThinkingLevel.fromApiValue(selected.string("thinking_level")),
+                            selected["reasoning_summary"]?.jsonPrimitive?.booleanOrNull ?: false,
                         )
                     else null,
                 providers =
@@ -93,6 +94,7 @@ class HarnessClient(
                 put("model", selection.model)
                 put("session_id", sessionId)
                 selection.thinkingLevel?.let { put("thinking_level", it.apiValue) }
+                put("reasoning_summary", selection.reasoningSummary)
             },
         )
     }
@@ -478,3 +480,51 @@ internal fun JsonElement?.hasFunctionCall(): Boolean =
     }
 
 private fun String.urlEncode() = java.net.URLEncoder.encode(this, Charsets.UTF_8.name())
+
+data class ReasoningContent(val text: String, val isSummary: Boolean)
+
+internal fun JsonElement?.reasoningContent(): ReasoningContent? =
+    when (this) {
+        null,
+        JsonNull,
+        is JsonPrimitive -> null
+        is JsonArray -> {
+            val parts = mapNotNull { it.reasoningContent() }
+            parts
+                .takeIf { it.isNotEmpty() }
+                ?.let {
+                    ReasoningContent(
+                        text = it.joinToString("\n") { part -> part.text },
+                        isSummary = it.all(ReasoningContent::isSummary),
+                    )
+                }
+        }
+        is JsonObject -> {
+            when (string("type")) {
+                "summary_text" ->
+                    string("text")?.takeIf(String::isNotBlank)?.let { ReasoningContent(it, true) }
+                "reasoning" ->
+                    this["summary"].reasoningContent()
+                        ?: listOf("reasoning", "reasoning_content")
+                            .firstNotNullOfOrNull { key -> string(key)?.takeIf(String::isNotBlank) }
+                            ?.let { ReasoningContent(it, false) }
+                else -> {
+                    listOf("reasoning", "reasoning_content")
+                        .firstNotNullOfOrNull { key -> string(key)?.takeIf(String::isNotBlank) }
+                        ?.let { ReasoningContent(it, false) }
+                        ?: this["reasoning_details"].reasoningDetailsContent()
+                        ?: this["output"].reasoningContent()
+                }
+            }
+        }
+    }
+
+private fun JsonElement?.reasoningDetailsContent(): ReasoningContent? {
+    val text =
+        (this as? JsonArray)
+            ?.mapNotNull { (it as? JsonObject)?.string("text") }
+            ?.filter(String::isNotBlank)
+            ?.joinToString("")
+            .orEmpty()
+    return text.takeIf(String::isNotBlank)?.let { ReasoningContent(it, false) }
+}
