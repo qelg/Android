@@ -586,7 +586,8 @@ private fun ChatPane(
     var fullScreenDetail by remember(state.selectedId) { mutableStateOf<FullScreenDetail?>(null) }
     var sessionDetail by remember(state.selectedId) { mutableStateOf<SessionDetailPage?>(null) }
     val selectedSession = state.sessions.firstOrNull { it.id == state.selectedId }
-    val blocks = remember(state.items) { groupTimeline(state.items) }
+    val blocks =
+        remember(state.items) { groupTimeline(attachReasoningToToolOperations(state.items)) }
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val unread = state.selectedId?.let { state.unreadCounts[it] } ?: 0
@@ -1964,10 +1965,16 @@ private fun TimelineItem(
 ) {
     when (item) {
         is ChatItem.Message -> MessageCard(item, showReasoning)
-        is ChatItem.Tool -> ToolCard(item, onOpenDetails = onOpenToolDetails)
+        is ChatItem.Tool ->
+            ToolCard(item, showReasoning = showReasoning, onOpenDetails = onOpenToolDetails)
         is ChatItem.ParallelToolGroup ->
-            ParallelToolGroupCard(item, onOpenDetails = onOpenToolDetails)
-        is ChatItem.ToolGroup -> ToolSummaryCard(item, onOpenDetails = onOpenToolDetails)
+            ParallelToolGroupCard(
+                item,
+                showReasoning = showReasoning,
+                onOpenDetails = onOpenToolDetails,
+            )
+        is ChatItem.ToolGroup ->
+            ToolSummaryCard(item, showReasoning = showReasoning, onOpenDetails = onOpenToolDetails)
         is ChatItem.Status ->
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(item.text, Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
@@ -1976,8 +1983,12 @@ private fun TimelineItem(
     }
 }
 
+internal fun shouldDisplayMessage(message: ChatItem.Message, showReasoning: Boolean): Boolean =
+    message.text.isNotBlank() || (showReasoning && !message.reasoning.isNullOrBlank())
+
 @Composable
 private fun MessageCard(message: ChatItem.Message, showReasoning: Boolean) {
+    if (!shouldDisplayMessage(message, showReasoning)) return
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = if (message.role == "user") Arrangement.End else Arrangement.Start,
@@ -2014,9 +2025,29 @@ private fun MessageCard(message: ChatItem.Message, showReasoning: Boolean) {
 }
 
 @Composable
-private fun ToolSummaryCard(group: ChatItem.ToolGroup, onOpenDetails: (ChatItem.Tool) -> Unit) {
+private fun ReasoningTrace(text: String, summary: Boolean) {
+    Column(Modifier.padding(vertical = 2.dp)) {
+        Text(
+            if (summary) "Reasoning summary" else "Reasoning",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        SelectionContainer { Text(text, style = MaterialTheme.typography.bodySmall) }
+    }
+}
+
+@Composable
+private fun ToolSummaryCard(
+    group: ChatItem.ToolGroup,
+    showReasoning: Boolean,
+    onOpenDetails: (ChatItem.Tool) -> Unit,
+) {
     var expanded by rememberSaveable { mutableStateOf(false) }
     val breakdown = remember(group.operations) { toolCountBreakdown(group.operations) }
+    val lastReasoning =
+        remember(group.operations) {
+            group.operations.asReversed().firstNotNullOfOrNull(::operationReasoning)
+        }
     Card(Modifier.fillMaxWidth().clickable { expanded = !expanded }) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2024,6 +2055,8 @@ private fun ToolSummaryCard(group: ChatItem.ToolGroup, onOpenDetails: (ChatItem.
                 Spacer(Modifier.width(8.dp))
                 Column(Modifier.weight(1f)) {
                     Text("${group.callCount} tool calls in ${group.roundCount} rounds")
+                    if (showReasoning && lastReasoning != null)
+                        ReasoningTrace(lastReasoning.first, lastReasoning.second)
                     Text(
                         breakdown.entries.joinToString(" · ") { "${it.key} ×${it.value}" },
                         style = MaterialTheme.typography.labelSmall,
@@ -2049,6 +2082,7 @@ private fun ToolSummaryCard(group: ChatItem.ToolGroup, onOpenDetails: (ChatItem.
 @Composable
 private fun ParallelToolGroupCard(
     group: ChatItem.ParallelToolGroup,
+    showReasoning: Boolean = false,
     onOpenDetails: (ChatItem.Tool) -> Unit,
 ) {
     var expanded by rememberSaveable(group.id) { mutableStateOf(true) }
@@ -2076,6 +2110,8 @@ private fun ParallelToolGroupCard(
                 }
                 Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null)
             }
+            if (showReasoning && !group.reasoning.isNullOrBlank())
+                ReasoningTrace(group.reasoning, group.reasoningIsSummary)
             if (expanded)
                 group.tools.forEach { ToolCard(it, nested = true, onOpenDetails = onOpenDetails) }
         }
@@ -2086,6 +2122,7 @@ private fun ParallelToolGroupCard(
 private fun ToolCard(
     tool: ChatItem.Tool,
     nested: Boolean = false,
+    showReasoning: Boolean = false,
     onOpenDetails: (ChatItem.Tool) -> Unit,
 ) {
     var now by remember(tool.id, tool.startedAt) { mutableStateOf(java.time.Instant.now()) }
@@ -2112,18 +2149,22 @@ private fun ToolCard(
             else null
     ListItem(
         headlineContent = {
-            Text(
-                buildString {
-                    append(tool.name)
-                    append(" · ")
-                    append(tool.state)
-                    durationMs?.let {
+            Column {
+                if (showReasoning && !tool.reasoning.isNullOrBlank())
+                    ReasoningTrace(tool.reasoning, tool.reasoningIsSummary)
+                Text(
+                    buildString {
+                        append(tool.name)
                         append(" · ")
-                        if (tool.durationEstimated) append("≈ ")
-                        append(formatElapsed(it))
+                        append(tool.state)
+                        durationMs?.let {
+                            append(" · ")
+                            if (tool.durationEstimated) append("≈ ")
+                            append(formatElapsed(it))
+                        }
                     }
-                }
-            )
+                )
+            }
         },
         leadingContent = { Icon(toolIcon(tool.name), null) },
         trailingContent = { (tool.startedAt ?: tool.completedAt)?.let { ClockText(it) } },
