@@ -293,7 +293,20 @@ class HarnessClient(
                 )
             "chat.message.assistant.created" -> {
                 val content = payload["content"]
-                if (!content.hasFunctionCall()) {
+                if (content.hasFunctionCall()) {
+                    if (content.reasoningContent() != null) {
+                        eventChannel.send(
+                            GatewayEvent(
+                                "message.reasoning",
+                                sessionId,
+                                values(
+                                    "message_id" to
+                                        (eventRecord["id"] ?: JsonPrimitive("assistant"))
+                                ),
+                            )
+                        )
+                    }
+                } else {
                     eventChannel.send(
                         GatewayEvent(
                             "message.complete",
