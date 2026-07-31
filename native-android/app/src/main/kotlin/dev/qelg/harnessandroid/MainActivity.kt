@@ -679,6 +679,13 @@ private fun ChatPane(
                 },
                 windowInsets = WindowInsets(0, 0, 0, 0),
                 actions = {
+                    IconButton(onClick = { vm.toggleShowReasoning() }) {
+                        Icon(
+                            if (state.showReasoning) Icons.Default.Visibility
+                            else Icons.Default.VisibilityOff,
+                            if (state.showReasoning) "Hide reasoning" else "Show reasoning",
+                        )
+                    }
                     IconButton(
                         onClick = { showWhisperModels = true },
                         enabled = !state.transcribing,
@@ -732,7 +739,7 @@ private fun ChatPane(
                     itemsIndexed(blocks, key = ::timelineKey) { _, item ->
                         TimelineItem(
                             item,
-                            showReasoning = state.modelCatalog.selected?.reasoningSummary == true,
+                            showReasoning = state.showReasoning,
                         ) { tool ->
                             fullScreenDetail = FullScreenDetail.ToolCall(tool)
                         }
@@ -1858,9 +1865,9 @@ private fun ModelPickerDialog(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text("Show reasoning", style = MaterialTheme.typography.bodyMedium)
+                            Text("Request reasoning summary", style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                "Request summaries from ChatGPT Codex and show available reasoning",
+                                "Ask ChatGPT to provide a summary of its reasoning process",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
