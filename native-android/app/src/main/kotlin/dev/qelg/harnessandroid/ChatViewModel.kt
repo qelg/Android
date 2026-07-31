@@ -96,6 +96,7 @@ data class ChatUiState(
     val sessionEventsFor: String? = null,
     val sessionEventsLoading: Boolean = false,
     val sessionEventsError: ErrorMessage? = null,
+    val showReasoning: Boolean = true,
 ) {
     val active: Boolean
         get() = selectedId != null && selectedId in activeSessionIds
@@ -808,6 +809,10 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     fun selectWhisperModel(model: WhisperModel) {
         whisperModelStore.save(model)
         _state.update { it.copy(whisperModel = model) }
+    }
+
+    fun toggleShowReasoning() {
+        _state.update { it.copy(showReasoning = !it.showReasoning) }
     }
 
     fun isWhisperModelDownloaded(model: WhisperModel): Boolean = localWhisper.isDownloaded(model)
