@@ -132,8 +132,9 @@ data class CumulativeTokenUsage(
                 cacheWriteTokens = value.long("cache_write_tokens"),
                 reasoningTokens = value.long("reasoning_tokens"),
                 apiCalls = value.int("api_call_count"),
-                inputCost = value["input_cost"]?.jsonPrimitive?.doubleOrNull
-                    ?: value["cost"]?.jsonPrimitive?.doubleOrNull,
+                inputCost =
+                    value["input_cost"]?.jsonPrimitive?.doubleOrNull
+                        ?: value["cost"]?.jsonPrimitive?.doubleOrNull,
                 outputCost = value["output_cost"]?.jsonPrimitive?.doubleOrNull,
                 cacheMetricsReported =
                     value.containsKey("cache_read_tokens") ||
@@ -179,7 +180,9 @@ private fun providerInputCost(value: JsonObject): Double? {
     // Prefer cost_details breakdown (OpenRouter style)
     val details = value["cost_details"] as? JsonObject
     if (details != null) {
-        details["upstream_inference_prompt_cost"]?.jsonPrimitive?.doubleOrNull?.let { return it }
+        details["upstream_inference_prompt_cost"]?.jsonPrimitive?.doubleOrNull?.let {
+            return it
+        }
     }
     // Fallback to top-level keys used by some providers
     providerCost(value, "input")?.let { return it }
@@ -193,7 +196,9 @@ private fun providerOutputCost(value: JsonObject): Double? {
     // Prefer cost_details breakdown (OpenRouter style)
     val details = value["cost_details"] as? JsonObject
     if (details != null) {
-        details["upstream_inference_completions_cost"]?.jsonPrimitive?.doubleOrNull?.let { return it }
+        details["upstream_inference_completions_cost"]?.jsonPrimitive?.doubleOrNull?.let {
+            return it
+        }
     }
     // Fallback to top-level keys
     providerCost(value, "output")?.let { return it }
