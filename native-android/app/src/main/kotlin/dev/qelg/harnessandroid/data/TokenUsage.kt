@@ -132,7 +132,9 @@ data class CumulativeTokenUsage(
                 cacheWriteTokens = value.long("cache_write_tokens"),
                 reasoningTokens = value.long("reasoning_tokens"),
                 apiCalls = value.int("api_call_count"),
-                inputCost = value["input_cost"]?.jsonPrimitive?.doubleOrNull,
+                inputCost =
+                    value["input_cost"]?.jsonPrimitive?.doubleOrNull
+                        ?: value["cost"]?.jsonPrimitive?.doubleOrNull,
                 outputCost = value["output_cost"]?.jsonPrimitive?.doubleOrNull,
                 cacheMetricsReported =
                     value.containsKey("cache_read_tokens") ||
@@ -163,8 +165,8 @@ data class CumulativeTokenUsage(
                 cacheWriteTokens = cacheWrite,
                 reasoningTokens = outputDetails.long("reasoning_tokens"),
                 apiCalls = 1,
-                inputCost = providerCost(value, "input") ?: providerCost(value, "prompt"),
-                outputCost = providerCost(value, "output") ?: providerCost(value, "completion"),
+                inputCost = providerInputCost(value),
+                outputCost = providerOutputCost(value),
                 cacheMetricsReported =
                     inputDetails.containsKey("cached_tokens") ||
                         inputDetails.containsKey("cache_read_tokens") ||
@@ -174,13 +176,48 @@ data class CumulativeTokenUsage(
     }
 }
 
+private fun providerInputCost(value: JsonObject): Double? {
+    // Prefer cost_details breakdown (OpenRouter style)
+    val details = value["cost_details"] as? JsonObject
+    if (details != null) {
+        details["upstream_inference_prompt_cost"]?.jsonPrimitive?.doubleOrNull?.let {
+            return it
+        }
+    }
+    // Fallback to top-level keys used by some providers
+    providerCost(value, "input")?.let {
+        return it
+    }
+    providerCost(value, "prompt")?.let {
+        return it
+    }
+    // If only a total cost is available, store it as input cost
+    // (totalCost will return it when outputCost is null)
+    return value["cost"]?.jsonPrimitive?.doubleOrNull
+}
+
+private fun providerOutputCost(value: JsonObject): Double? {
+    // Prefer cost_details breakdown (OpenRouter style)
+    val details = value["cost_details"] as? JsonObject
+    if (details != null) {
+        details["upstream_inference_completions_cost"]?.jsonPrimitive?.doubleOrNull?.let {
+            return it
+        }
+    }
+    // Fallback to top-level keys
+    providerCost(value, "output")?.let {
+        return it
+    }
+    providerCost(value, "completion")?.let {
+        return it
+    }
+    return null
+}
+
 private fun providerCost(value: JsonObject, prefix: String): Double? {
-    // Some providers (e.g. OpenRouter) report cost in the usage object as
-    // "input_cost"/"output_cost" or "prompt_cost"/"completion_cost".
     val costKey = "${prefix}_cost"
     val cost = value[costKey]?.jsonPrimitive?.doubleOrNull
     if (cost != null) return cost
-    // Some providers embed cost as a string
     return value[costKey]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
 }
 
