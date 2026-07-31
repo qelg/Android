@@ -737,10 +737,7 @@ private fun ChatPane(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     itemsIndexed(blocks, key = ::timelineKey) { _, item ->
-                        TimelineItem(
-                            item,
-                            showReasoning = state.showReasoning,
-                        ) { tool ->
+                        TimelineItem(item, showReasoning = state.showReasoning) { tool ->
                             fullScreenDetail = FullScreenDetail.ToolCall(tool)
                         }
                     }
@@ -1865,7 +1862,10 @@ private fun ModelPickerDialog(
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Column(Modifier.weight(1f)) {
-                            Text("Request reasoning summary", style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                "Request reasoning summary",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
                             Text(
                                 "Ask ChatGPT to provide a summary of its reasoning process",
                                 style = MaterialTheme.typography.bodySmall,
