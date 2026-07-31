@@ -185,8 +185,12 @@ private fun providerInputCost(value: JsonObject): Double? {
         }
     }
     // Fallback to top-level keys used by some providers
-    providerCost(value, "input")?.let { return it }
-    providerCost(value, "prompt")?.let { return it }
+    providerCost(value, "input")?.let {
+        return it
+    }
+    providerCost(value, "prompt")?.let {
+        return it
+    }
     // If only a total cost is available, store it as input cost
     // (totalCost will return it when outputCost is null)
     return value["cost"]?.jsonPrimitive?.doubleOrNull
@@ -201,8 +205,12 @@ private fun providerOutputCost(value: JsonObject): Double? {
         }
     }
     // Fallback to top-level keys
-    providerCost(value, "output")?.let { return it }
-    providerCost(value, "completion")?.let { return it }
+    providerCost(value, "output")?.let {
+        return it
+    }
+    providerCost(value, "completion")?.let {
+        return it
+    }
     return null
 }
 
