@@ -811,7 +811,6 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         _state.update { it.copy(whisperModel = model) }
     }
 
-
     fun toggleShowReasoning() {
         _state.update { it.copy(showReasoning = !it.showReasoning) }
     }
