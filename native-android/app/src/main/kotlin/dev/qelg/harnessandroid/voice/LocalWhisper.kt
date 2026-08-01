@@ -7,6 +7,7 @@ import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -23,12 +24,27 @@ internal object WhisperNative {
 
     external fun freeContext(pointer: Long)
 
-    external fun transcribe(pointer: Long, samples: FloatArray, threadCount: Int): String
+    external fun transcribe(
+        pointer: Long,
+        samples: FloatArray,
+        threadCount: Int,
+        initialPrompt: String?,
+        listener: WhisperNativeListener,
+    ): String
+}
+
+internal interface WhisperNativeListener {
+    fun onProgress(percent: Int)
+
+    fun onPartial(text: String)
+
+    fun shouldAbort(): Boolean
 }
 
 class LocalWhisper(private val context: Context) : Closeable {
     private val mutex = Mutex()
     private val nativeLock = Any()
+    private val closed = AtomicBoolean(false)
     private var nativeContext = 0L
     private var loadedModelId: String? = null
 
@@ -36,27 +52,52 @@ class LocalWhisper(private val context: Context) : Closeable {
         samples: FloatArray,
         model: WhisperModel,
         onStatus: (String) -> Unit,
+        initialPrompt: String? = null,
+        onProgress: (Int) -> Unit = {},
+        onPartial: (String) -> Unit = {},
+        allowEmpty: Boolean = false,
+        shouldAbort: () -> Boolean = { false },
     ): String =
         withContext(Dispatchers.IO) {
             require(samples.isNotEmpty()) { "No voice audio was recorded" }
+            check(!closed.get()) { "Whisper is closed" }
             mutex.withLock {
                 val modelFile = ensureModel(model, onStatus)
                 onStatus("Transcribing locally with Whisper ${model.displayName}…")
                 synchronized(nativeLock) {
+                    check(!closed.get()) { "Whisper is closed" }
                     if (loadedModelId != model.id) {
                         releaseContext()
                         nativeContext = WhisperNative.createContext(modelFile.path)
                         loadedModelId = model.id
                     }
                     val threads = (Runtime.getRuntime().availableProcessors() - 2).coerceIn(2, 6)
-                    WhisperNative.transcribe(nativeContext, samples, threads).trim().also {
-                        require(it.isNotBlank()) { "Whisper did not detect any speech" }
-                    }
+                    WhisperNative.transcribe(
+                            nativeContext,
+                            samples,
+                            threads,
+                            initialPrompt,
+                            object : WhisperNativeListener {
+                                override fun onProgress(percent: Int) = onProgress(percent)
+
+                                override fun onPartial(text: String) = onPartial(text.trim())
+
+                                override fun shouldAbort(): Boolean = shouldAbort()
+                            },
+                        )
+                        .trim()
+                        .also {
+                            if (!allowEmpty)
+                                require(it.isNotBlank()) { "Whisper did not detect any speech" }
+                        }
                 }
             }
         }
 
-    override fun close() = synchronized(nativeLock) { releaseContext() }
+    override fun close() {
+        closed.set(true)
+        synchronized(nativeLock) { releaseContext() }
+    }
 
     fun isDownloaded(model: WhisperModel): Boolean = modelFile(model).isValidModel(model)
 

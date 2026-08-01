@@ -1,5 +1,6 @@
 package dev.qelg.harnessandroid
 
+import dev.qelg.harnessandroid.voice.PcmChunkAccumulator
 import dev.qelg.harnessandroid.voice.WhisperModel
 import dev.qelg.harnessandroid.voice.pcm16ToFloat
 import org.junit.Assert.assertArrayEquals
@@ -14,6 +15,20 @@ class LocalVoiceTest {
             pcm16ToFloat(byteArrayOf(0, -128, 0, 0, -1, 127)),
             0f,
         )
+    }
+
+    @Test
+    fun pcmAccumulatorEmitsCompleteChunksAndKeepsOnlyTheTail() {
+        val accumulator = PcmChunkAccumulator(chunkBytes = 4)
+
+        assertEquals(emptyList<ByteArray>(), accumulator.add(byteArrayOf(1, 2, 3), 3))
+        val chunks = accumulator.add(byteArrayOf(4, 5, 6, 7, 8, 9), 6)
+
+        assertEquals(2, chunks.size)
+        assertArrayEquals(byteArrayOf(1, 2, 3, 4), chunks[0])
+        assertArrayEquals(byteArrayOf(5, 6, 7, 8), chunks[1])
+        assertArrayEquals(byteArrayOf(9), accumulator.remaining())
+        assertEquals(9, accumulator.totalBytes)
     }
 
     @Test
