@@ -17,7 +17,10 @@ import org.unifiedpush.android.connector.UnifiedPush
 
 object PushRegistration {
     suspend fun register(activity: Activity) {
-        SecureCredentials(activity).loadPushEndpoint()?.let { endpoint ->
+        if (!PushCrypto.isSupported()) return
+        val credentials = SecureCredentials(activity)
+        if (credentials.load()?.supportsEncryptedPush() != true) return
+        credentials.loadPushEndpoint()?.let { endpoint ->
             runCatching { uploadEndpoint(activity, endpoint) }
         }
         UnifiedPush.tryUseCurrentOrDefaultDistributor(activity) { available ->
@@ -53,6 +56,7 @@ object PushRegistration {
             buildJsonObject {
                     put("instance_id", instanceId(context))
                     put("endpoint", endpoint)
+                    put("public_key", PushCrypto.publicKey())
                 }
                 .toString(),
         )
