@@ -7,7 +7,6 @@ import android.content.Context
 import android.content.Intent
 import androidx.core.app.NotificationCompat
 import dev.qelg.harnessandroid.MainActivity
-import java.nio.charset.StandardCharsets
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -32,17 +31,19 @@ class HarnessPushService : PushService() {
     }
 
     override fun onMessage(message: PushMessage, instance: String) {
-        val payload =
-            runCatching {
-                    Json.parseToJsonElement(message.content.toString(StandardCharsets.UTF_8))
-                        .jsonObject
-                }
-                .getOrNull() ?: return
-        if (payload["type"]?.jsonPrimitive?.contentOrNull != "session.finished") return
-        val sessionId = payload["session_id"]?.jsonPrimitive?.contentOrNull ?: return
-        val title = payload["title"]?.jsonPrimitive?.contentOrNull ?: "Harness session"
-        val content = payload["content"]?.jsonPrimitive?.contentOrNull ?: "Session finished"
-        showNotification(this, sessionId, title, content)
+        scope.launch {
+            val plaintext =
+                PushCrypto.decrypt(message.content, PushRegistration.instanceId(this@HarnessPushService))
+                    ?: return@launch
+            val payload =
+                runCatching { Json.parseToJsonElement(plaintext).jsonObject }.getOrNull()
+                    ?: return@launch
+            if (payload["type"]?.jsonPrimitive?.contentOrNull != "session.finished") return@launch
+            val sessionId = payload["session_id"]?.jsonPrimitive?.contentOrNull ?: return@launch
+            val title = payload["title"]?.jsonPrimitive?.contentOrNull ?: "Harness session"
+            val content = payload["content"]?.jsonPrimitive?.contentOrNull ?: "Session finished"
+            showNotification(this@HarnessPushService, sessionId, title, content)
+        }
     }
 
     override fun onRegistrationFailed(reason: FailedReason, instance: String) = Unit
