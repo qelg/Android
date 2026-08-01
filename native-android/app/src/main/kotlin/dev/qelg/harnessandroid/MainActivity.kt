@@ -244,9 +244,13 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
 }
 
 @Composable
-internal fun UnifiedPushSettingsDialog(activity: MainActivity, onDismiss: () -> Unit) {
+internal fun UnifiedPushSettingsDialog(
+    activity: MainActivity,
+    initialEndpoint: String? = SecureCredentials(activity).loadPushEndpoint(),
+    onDismiss: () -> Unit,
+) {
     var enabled by remember { mutableStateOf(PushRegistration.isEnabled(activity)) }
-    var endpoint by remember { mutableStateOf(SecureCredentials(activity).loadPushEndpoint()) }
+    var endpoint by remember { mutableStateOf(initialEndpoint) }
     var working by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val supported = PushCrypto.isSupported()
@@ -266,11 +270,14 @@ internal fun UnifiedPushSettingsDialog(activity: MainActivity, onDismiss: () -> 
                     if (enabled) "Notifications are enabled." else "Notifications are disabled.",
                     style = MaterialTheme.typography.bodyMedium,
                 )
-                Text(
-                    if (endpoint == null) "No distributor endpoint is registered yet."
-                    else "A distributor endpoint is registered.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+                endpoint?.let { pushUrl ->
+                    Text("Push URL", style = MaterialTheme.typography.bodyMedium)
+                    SelectionContainer { Text(pushUrl, style = MaterialTheme.typography.bodySmall) }
+                }
+                    ?: Text(
+                        "No distributor endpoint is registered yet.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
                 if (!notificationsEnabled) {
                     Text(
                         "Android notification permission is disabled.",
