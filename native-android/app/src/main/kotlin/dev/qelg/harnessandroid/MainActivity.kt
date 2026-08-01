@@ -48,7 +48,6 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.qelg.harnessandroid.data.*
 import dev.qelg.harnessandroid.push.PushCrypto
 import dev.qelg.harnessandroid.push.PushRegistration
-import dev.qelg.harnessandroid.voice.LocalAudioRecorder
 import dev.qelg.harnessandroid.voice.WhisperModel
 import java.text.NumberFormat
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -812,7 +811,7 @@ private fun ChatPane(
                     }
                     IconButton(
                         onClick = { showWhisperModels = true },
-                        enabled = !state.transcribing,
+                        enabled = !state.transcribing && !state.voiceRecording,
                     ) {
                         Icon(Icons.Default.SettingsVoice, "Choose local Whisper model")
                     }
@@ -897,13 +896,52 @@ private fun ChatPane(
                 ContextUsageBar(usage, onClick = { showUsageDetails = true })
             }
             if (state.transcribing) {
-                Row(
+                Column(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                    Spacer(Modifier.width(8.dp))
-                    Text(state.transcriptionStatus ?: "Transcribing locally with Whisper…")
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (state.transcriptionProgress == null)
+                            CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (state.voiceTargetSessionId == state.selectedId)
+                                state.transcriptionStatus ?: "Transcribing locally with Whisper…"
+                            else "Transcribing voice for another chat…",
+                            Modifier.weight(1f),
+                        )
+                        state.transcriptionProgress?.let { progress ->
+                            Text(
+                                "${(progress * 100).toInt()}%",
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
+                    }
+                    state.transcriptionProgress?.let { progress ->
+                        LinearProgressIndicator(
+                            progress = { progress },
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    state.transcriptionProgressLabel?.let { label ->
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    state.transcriptionText
+                        ?.takeIf { state.voiceTargetSessionId == state.selectedId }
+                        ?.let { partial ->
+                            SelectionContainer {
+                                Text(
+                                    partial,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 4,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
                 }
             }
             state.approval?.let { approval ->
@@ -971,7 +1009,11 @@ private fun ChatPane(
                 }
             }
             Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
-                VoiceButton(vm, enabled = !state.transcribing && !state.connecting && !state.active)
+                VoiceButton(
+                    vm,
+                    recording = state.voiceRecording,
+                    enabled = !state.transcribing && !state.connecting && !state.active,
+                )
                 OutlinedTextField(
                     input,
                     vm::setDraft,
@@ -2864,28 +2906,16 @@ private fun WhisperModelDialog(
     )
 }
 
-private data class VoiceRecording(val recorder: LocalAudioRecorder, val target: VoiceMessageTarget)
-
 @Composable
-private fun VoiceButton(vm: ChatViewModel, enabled: Boolean) {
+private fun VoiceButton(vm: ChatViewModel, recording: Boolean, enabled: Boolean) {
     val lifecycleOwner = LocalLifecycleOwner.current
-    val scope = rememberCoroutineScope()
-    var recording by remember { mutableStateOf<VoiceRecording?>(null) }
     var pendingTarget by remember { mutableStateOf<VoiceMessageTarget?>(null) }
-
-    fun discardRecording() {
-        recording?.recorder?.discard()
-        recording = null
-        pendingTarget = null
-    }
 
     fun start(target: VoiceMessageTarget) {
         pendingTarget = null
-        runCatching { LocalAudioRecorder().also { it.start() } }
-            .onSuccess { recording = VoiceRecording(it, target) }
-            .onFailure {
-                discardRecording()
-                vm.reportError(IllegalStateException("Could not start voice recording", it))
+        runCatching { vm.startVoiceRecording(target) }
+            .onFailure { error ->
+                vm.reportError(IllegalStateException("Could not start voice recording", error))
             }
     }
 
@@ -2899,8 +2929,7 @@ private fun VoiceButton(vm: ChatViewModel, enabled: Boolean) {
         }
     IconButton(
         onClick = {
-            val active = recording
-            if (active == null) {
+            if (!recording) {
                 val target = vm.currentVoiceMessageTarget()
                 if (target == null) {
                     vm.reportError(IllegalStateException("No session selected"))
@@ -2908,33 +2937,24 @@ private fun VoiceButton(vm: ChatViewModel, enabled: Boolean) {
                 }
                 pendingTarget = target
                 permission.launch(Manifest.permission.RECORD_AUDIO)
-            } else {
-                recording = null
-                scope.launch {
-                    runCatching { active.recorder.stop() }
-                        .onSuccess { samples -> vm.transcribeAndSend(samples, active.target) }
-                        .onFailure(vm::reportError)
-                }
-            }
+            } else vm.stopVoiceRecording()
         },
-        enabled = enabled || recording != null,
+        enabled = enabled || recording,
     ) {
         Icon(
-            if (recording == null) Icons.Default.Mic else Icons.Default.Stop,
-            if (recording == null) "Record with local Whisper" else "Stop recording",
-            tint =
-                if (recording == null) LocalContentColor.current
-                else MaterialTheme.colorScheme.error,
+            if (!recording) Icons.Default.Mic else Icons.Default.Stop,
+            if (!recording) "Record with local Whisper" else "Stop recording",
+            tint = if (!recording) LocalContentColor.current else MaterialTheme.colorScheme.error,
         )
     }
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) discardRecording()
+            if (event == Lifecycle.Event.ON_STOP) vm.cancelVoiceRecordingIfCapturing()
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
-            discardRecording()
+            vm.cancelVoiceRecordingIfCapturing()
         }
     }
 }

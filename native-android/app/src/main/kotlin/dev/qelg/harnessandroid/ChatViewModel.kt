@@ -7,6 +7,7 @@ import dev.qelg.harnessandroid.voice.*
 import java.io.Closeable
 import java.time.Instant
 import kotlin.coroutines.EmptyCoroutineContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -23,6 +24,17 @@ data class VoiceMessageTarget(
     val model: String?,
     val connectionVersion: Long,
 )
+
+private data class ActiveVoiceTranscription(
+    val id: Long,
+    val transcriber: IncrementalVoiceTranscriber,
+    val recorder: LocalAudioRecorder,
+)
+
+internal fun formatVoiceDuration(samples: Long): String {
+    val seconds = samples.coerceAtLeast(0) / LocalAudioRecorder.SAMPLE_RATE
+    return "%d:%02d".format(seconds / 60, seconds % 60)
+}
 
 internal fun dispatchClose(
     closeable: Closeable?,
@@ -87,8 +99,13 @@ data class ChatUiState(
     val activeSessionIds: Set<String> = emptySet(),
     val modelCatalog: ModelCatalog = ModelCatalog(),
     val modelLoading: Boolean = false,
+    val voiceRecording: Boolean = false,
     val transcribing: Boolean = false,
     val transcriptionStatus: String? = null,
+    val transcriptionProgress: Float? = null,
+    val transcriptionProgressLabel: String? = null,
+    val transcriptionText: String? = null,
+    val voiceTargetSessionId: String? = null,
     val whisperModel: WhisperModel = WhisperModel.Base,
     val approval: ApprovalRequest? = null,
     val clarify: ClarifyRequest? = null,
@@ -195,6 +212,8 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     private var selectionVersion = 0L
     private var historyRequestVersion = 0L
     private var liveMessageSequence = 0L
+    private var voiceTranscriptionSequence = 0L
+    private var voiceTranscription: ActiveVoiceTranscription? = null
     private val runtimeToStored = mutableMapOf<String, String>()
     private val sessionModelOverrides = mutableMapOf<String, String>()
 
@@ -215,6 +234,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             }
             return
         }
+        cancelVoiceOperation(null)
         credentials.save(config)
         draftNamespace = config.normalizedBaseUrl
         val drafts = draftStore.load(draftNamespace)
@@ -293,6 +313,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     }
 
     fun disconnect() {
+        cancelVoiceOperation(null)
         connectionJob?.cancel()
         eventJob?.cancel()
         selectionJob?.cancel()
@@ -917,28 +938,156 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         )
     }
 
-    fun transcribeAndSend(samples: FloatArray, target: VoiceMessageTarget) =
-        viewModelScope.launch {
-            val model = state.value.whisperModel
-            val result =
-                runVoiceTranscription(
-                    setTranscribing = { active ->
+    fun startVoiceRecording(target: VoiceMessageTarget) {
+        check(voiceTranscription == null) { "A voice recording is already active" }
+        val id = ++voiceTranscriptionSequence
+        val model = state.value.whisperModel
+        lateinit var transcriber: IncrementalVoiceTranscriber
+        val recorder =
+            LocalAudioRecorder(
+                onChunk = { pcm16 -> transcriber.addChunk(pcm16) },
+                onSamplesRecorded = { samples -> transcriber.noteRecordedSamples(samples) },
+                onMaximumDuration = {
+                    viewModelScope.launch {
+                        updateVoiceStatus(
+                            id,
+                            "Maximum ${LocalAudioRecorder.MAX_RECORDING_MINUTES}-minute recording reached; finishing…",
+                        )
+                        stopVoiceRecording()
+                    }
+                },
+            )
+        transcriber =
+            IncrementalVoiceTranscriber(
+                scope = viewModelScope,
+                transcribe = { samples, initialPrompt, onProgress, onPartial, shouldAbort ->
+                    localWhisper.transcribe(
+                        samples = samples,
+                        model = model,
+                        onStatus = { status ->
+                            viewModelScope.launch { updateVoiceStatus(id, status) }
+                        },
+                        initialPrompt = initialPrompt,
+                        onProgress = onProgress,
+                        onPartial = onPartial,
+                        allowEmpty = true,
+                        shouldAbort = shouldAbort,
+                    )
+                },
+                onStarted = {
+                    if (voiceTranscription?.id == id) {
                         _state.update {
                             it.copy(
-                                transcribing = active,
-                                transcriptionStatus =
-                                    if (active) "Preparing Whisper ${model.displayName}…" else null,
+                                transcribing = true,
+                                transcriptionStatus = "Preparing Whisper ${model.displayName}…",
                             )
                         }
-                    },
-                    operation = {
-                        localWhisper.transcribe(samples, model) { status ->
-                            _state.update { it.copy(transcriptionStatus = status) }
-                        }
-                    },
-                )
-            result.onSuccess { sendVoiceMessage(target, it) }.onFailure(::showError)
+                    }
+                },
+                onUpdate = { update -> updateVoiceProgress(id, update) },
+                onComplete = { text ->
+                    if (voiceTranscription?.id == id) sendVoiceMessage(target, text)
+                },
+                onFailure = { error -> handleVoiceTranscriptionFailure(id, error) },
+                onStopped = { clearVoiceTranscription(id) },
+            )
+        voiceTranscription = ActiveVoiceTranscription(id, transcriber, recorder)
+        _state.update {
+            it.copy(
+                voiceRecording = true,
+                transcribing = false,
+                transcriptionStatus = null,
+                transcriptionProgress = null,
+                transcriptionProgressLabel = null,
+                transcriptionText = null,
+                voiceTargetSessionId = target.storedSessionId,
+            )
         }
+        try {
+            recorder.start()
+        } catch (error: Throwable) {
+            cancelVoiceOperation(id)
+            throw error
+        }
+    }
+
+    fun stopVoiceRecording() {
+        val active = voiceTranscription ?: return
+        if (!state.value.voiceRecording) return
+        _state.update { it.copy(voiceRecording = false) }
+        viewModelScope.launch {
+            runCatching { active.recorder.stop() }
+                .onSuccess { tail ->
+                    if (voiceTranscription?.id == active.id)
+                        active.transcriber.finish(tail.pcm16, tail.totalSamples)
+                }
+                .onFailure { error ->
+                    cancelVoiceOperation(active.id)
+                    showError(error)
+                }
+        }
+    }
+
+    fun cancelVoiceRecordingIfCapturing() {
+        if (state.value.voiceRecording) cancelVoiceOperation(voiceTranscription?.id)
+    }
+
+    private fun handleVoiceTranscriptionFailure(id: Long, error: Throwable) {
+        if (voiceTranscription?.id != id) return
+        cancelVoiceOperation(id)
+        if (error !is CancellationException) showError(error)
+    }
+
+    private fun updateVoiceStatus(id: Long, status: String) {
+        if (voiceTranscription?.id == id) _state.update { it.copy(transcriptionStatus = status) }
+    }
+
+    private fun updateVoiceProgress(id: Long, update: VoiceTranscriptionSnapshot) {
+        if (voiceTranscription?.id != id) return
+        val total = update.recordedSamples.coerceAtLeast(1)
+        val completed = update.completedSamples.coerceIn(0, total)
+        _state.update {
+            it.copy(
+                transcriptionProgress = completed.toFloat() / total,
+                transcriptionProgressLabel =
+                    buildString {
+                        append(formatVoiceDuration(completed))
+                        append(" of ")
+                        append(formatVoiceDuration(total))
+                        if (update.recording) append(" recorded")
+                    },
+                transcriptionText = update.text.takeIf(String::isNotBlank),
+            )
+        }
+    }
+
+    private fun clearVoiceTranscription(id: Long) {
+        if (voiceTranscription?.id != id) return
+        voiceTranscription = null
+        clearVoiceState()
+    }
+
+    private fun cancelVoiceOperation(id: Long?) {
+        val active = voiceTranscription?.takeIf { id == null || it.id == id } ?: return
+        voiceTranscription = null
+        active.transcriber.cancel()
+        Dispatchers.IO.dispatch(EmptyCoroutineContext) { active.recorder.discard() }
+        clearVoiceState()
+    }
+
+    private fun clearVoiceState() {
+        _state.update {
+            it.copy(
+                voiceRecording = false,
+                transcribing = false,
+                transcriptionStatus = null,
+                transcriptionProgress = null,
+                transcriptionProgressLabel = null,
+                transcriptionText = null,
+                voiceTargetSessionId = null,
+            )
+        }
+    }
 
     private fun sendVoiceMessage(target: VoiceMessageTarget, text: String) {
         val clean = text.trim()
@@ -1518,6 +1667,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         }
 
     override fun onCleared() {
+        cancelVoiceOperation(null)
         backgroundSessionJobs.values.forEach(Job::cancel)
         backgroundSessionJobs.clear()
         dispatchClose(localWhisper)
