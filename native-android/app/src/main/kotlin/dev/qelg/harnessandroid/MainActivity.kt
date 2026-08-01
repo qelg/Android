@@ -39,12 +39,14 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.qelg.harnessandroid.data.*
+import dev.qelg.harnessandroid.push.PushCrypto
 import dev.qelg.harnessandroid.push.PushRegistration
 import dev.qelg.harnessandroid.voice.LocalAudioRecorder
 import dev.qelg.harnessandroid.voice.WhisperModel
@@ -179,6 +181,8 @@ private fun ConnectionScreen(connect: (ConnectionConfig) -> Unit) {
 
 @Composable
 private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
+    val context = LocalContext.current
+    var showPushSettings by rememberSaveable { mutableStateOf(false) }
     var showSessions by rememberSaveable { mutableStateOf(state.selectedId == null) }
     LaunchedEffect(state.selectedId) { if (state.selectedId != null) showSessions = false }
     val inTree = state.treeParentId != null
@@ -200,7 +204,13 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
         }
         if (wide) {
             Row {
-                SessionPane(state, vm, Modifier.width(300.dp).fillMaxHeight()) {}
+                SessionPane(
+                    state,
+                    vm,
+                    Modifier.width(300.dp).fillMaxHeight(),
+                    {},
+                    { showPushSettings = true },
+                )
                 VerticalDivider()
                 if (inTree) {
                     TreePane(state, vm, treeSessions, Modifier.width(300.dp).fillMaxHeight())
@@ -211,7 +221,9 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
         } else {
             when {
                 showSessions || (!inTree && !inChat) ->
-                    SessionPane(state, vm, Modifier.fillMaxSize()) { showSessions = false }
+                    SessionPane(state, vm, Modifier.fillMaxSize(), { showSessions = false }) {
+                        showPushSettings = true
+                    }
                 inTree && !inChat -> {
                     TreePane(state, vm, treeSessions, Modifier.fillMaxSize())
                 }
@@ -225,7 +237,80 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
             }
         }
     }
+    if (showPushSettings) {
+        UnifiedPushSettingsDialog(context as MainActivity) { showPushSettings = false }
+    }
     UpdateDialog(state.updateState, vm::downloadUpdate, vm::resetUpdateState)
+}
+
+@Composable
+internal fun UnifiedPushSettingsDialog(activity: MainActivity, onDismiss: () -> Unit) {
+    var enabled by remember { mutableStateOf(PushRegistration.isEnabled(activity)) }
+    var endpoint by remember { mutableStateOf(SecureCredentials(activity).loadPushEndpoint()) }
+    var working by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val supported = PushCrypto.isSupported()
+    val notificationsEnabled = NotificationManagerCompat.from(activity).areNotificationsEnabled()
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("UnifiedPush") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    if (supported) "End-to-end encryption is available."
+                    else "Encrypted UnifiedPush needs Android 12 or newer.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    if (enabled) "Notifications are enabled." else "Notifications are disabled.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    if (endpoint == null) "No distributor endpoint is registered yet."
+                    else "A distributor endpoint is registered.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                if (!notificationsEnabled) {
+                    Text(
+                        "Android notification permission is disabled.",
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("Enable UnifiedPush", Modifier.weight(1f))
+                    Switch(
+                        checked = enabled,
+                        enabled = supported && !working,
+                        onCheckedChange = { requested ->
+                            working = true
+                            scope.launch {
+                                runCatching { PushRegistration.setEnabled(activity, requested) }
+                                enabled = PushRegistration.isEnabled(activity)
+                                endpoint = SecureCredentials(activity).loadPushEndpoint()
+                                working = false
+                            }
+                        },
+                    )
+                }
+                OutlinedButton(
+                    enabled = supported && enabled && !working,
+                    onClick = {
+                        working = true
+                        scope.launch {
+                            runCatching { PushRegistration.register(activity) }
+                            endpoint = SecureCredentials(activity).loadPushEndpoint()
+                            working = false
+                        }
+                    },
+                ) {
+                    Text(if (working) "Updating…" else "Register or refresh")
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
+    )
 }
 
 @Composable
@@ -277,6 +362,7 @@ private fun SessionPane(
     vm: ChatViewModel,
     modifier: Modifier,
     selected: () -> Unit,
+    openPushSettings: () -> Unit,
 ) {
     var showArchived by rememberSaveable { mutableStateOf(false) }
     val allSessions =
@@ -303,6 +389,9 @@ private fun SessionPane(
                             if (showArchived) MaterialTheme.colorScheme.primary
                             else LocalContentColor.current,
                     )
+                }
+                IconButton(openPushSettings) {
+                    Icon(Icons.Default.Notifications, "UnifiedPush settings")
                 }
                 IconButton(vm::refresh) { Icon(Icons.Default.Refresh, "Refresh") }
                 IconButton(vm::checkForUpdate) {

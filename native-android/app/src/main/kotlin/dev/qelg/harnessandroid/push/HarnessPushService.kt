@@ -25,8 +25,12 @@ class HarnessPushService : PushService() {
 
     override fun onNewEndpoint(endpoint: PushEndpoint, instance: String) {
         PushRegistration.saveEndpoint(this, endpoint.url)
-        scope.launch {
-            runCatching { PushRegistration.uploadEndpoint(this@HarnessPushService, endpoint.url) }
+        if (PushRegistration.isEnabled(this)) {
+            scope.launch {
+                runCatching {
+                    PushRegistration.uploadEndpoint(this@HarnessPushService, endpoint.url)
+                }
+            }
         }
     }
 

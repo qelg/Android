@@ -798,10 +798,4 @@ class ModelsTest {
         assertTrue(!isSafeExternalUrl("intent://settings"))
         assertTrue(!isSafeExternalUrl("//example.com"))
     }
-
-    @Test
-    fun encryptedPushRequiresHttpsEnrollment() {
-        assertTrue(ConnectionConfig("https://harness.example").supportsEncryptedPush())
-        assertFalse(ConnectionConfig("http://harness.example.ts.net").supportsEncryptedPush())
-    }
 }

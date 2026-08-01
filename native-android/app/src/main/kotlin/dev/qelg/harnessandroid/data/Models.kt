@@ -650,10 +650,6 @@ data class ConnectionConfig(val baseUrl: String, val token: String = "") {
                 .toString()
         }
 
-    /** The enrollment request binds a notification decryption key and must be authenticated. */
-    fun supportsEncryptedPush(): Boolean =
-        runCatching { URI(normalizedBaseUrl).scheme?.lowercase() == "https" }.getOrDefault(false)
-
     fun isAllowedEndpoint(): Boolean {
         val uri = runCatching { URI(normalizedBaseUrl) }.getOrNull() ?: return false
         val scheme = uri.scheme?.lowercase() ?: return false

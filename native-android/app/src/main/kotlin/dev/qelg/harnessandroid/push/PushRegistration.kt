@@ -18,8 +18,8 @@ import org.unifiedpush.android.connector.UnifiedPush
 object PushRegistration {
     suspend fun register(activity: Activity) {
         if (!PushCrypto.isSupported()) return
+        if (!isEnabled(activity)) return
         val credentials = SecureCredentials(activity)
-        if (credentials.load()?.supportsEncryptedPush() != true) return
         credentials.loadPushEndpoint()?.let { endpoint ->
             runCatching { uploadEndpoint(activity, endpoint) }
         }
@@ -41,6 +41,25 @@ object PushRegistration {
 
     fun saveEndpoint(context: Context, endpoint: String) {
         SecureCredentials(context).savePushEndpoint(endpoint)
+    }
+
+    fun isEnabled(context: Context): Boolean =
+        context.applicationContext
+            .getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+            .getBoolean(ENABLED, true)
+
+    suspend fun setEnabled(activity: Activity, enabled: Boolean) {
+        activity.applicationContext
+            .getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(ENABLED, enabled)
+            .apply()
+        if (enabled) {
+            SecureCredentials(activity).loadPushEndpoint()?.let { uploadEndpoint(activity, it) }
+            register(activity)
+        } else {
+            removeEndpoint(activity)
+        }
     }
 
     fun clearEndpoint(context: Context) {
@@ -93,6 +112,7 @@ object PushRegistration {
 
     private const val PREFERENCES = "unifiedpush_registration"
     private const val INSTANCE_ID = "instance_id"
+    private const val ENABLED = "enabled"
     private val JSON_MEDIA_TYPE = "application/json".toMediaType()
     private val CLIENT = OkHttpClient()
 }
