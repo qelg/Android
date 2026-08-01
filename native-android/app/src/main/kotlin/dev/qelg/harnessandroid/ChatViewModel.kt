@@ -70,6 +70,10 @@ data class ChatUiState(
     val childSessions: Map<String, List<HarnessSession>> = emptyMap(),
     val childSessionsLoading: Set<String> = emptySet(),
     val childSessionsErrors: Map<String, ErrorMessage> = emptyMap(),
+    val containers: List<HarnessContainer> = emptyList(),
+    val containersLoading: Boolean = false,
+    val containersError: ErrorMessage? = null,
+    val deletingContainerIds: Set<String> = emptySet(),
     val search: String = "",
     val selectedId: String? = null,
     val treeParentId: String? = null,
@@ -185,6 +189,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     private var selectionJob: Job? = null
     private var refreshJob: Job? = null
     private var usageJob: Job? = null
+    private var containersJob: Job? = null
     private val backgroundSessionJobs = mutableMapOf<String, Job>()
     private var connectionVersion = 0L
     private var selectionVersion = 0L
@@ -219,6 +224,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         selectionJob?.cancel()
         refreshJob?.cancel()
         usageJob?.cancel()
+        containersJob?.cancel()
         backgroundSessionJobs.values.forEach(Job::cancel)
         backgroundSessionJobs.clear()
         dispatchClose(client)
@@ -237,6 +243,10 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 childSessions = emptyMap(),
                 childSessionsLoading = emptySet(),
                 childSessionsErrors = emptyMap(),
+                containers = emptyList(),
+                containersLoading = false,
+                containersError = null,
+                deletingContainerIds = emptySet(),
                 drafts = drafts,
                 unreadCounts = emptyMap(),
                 readUpdates = readUpdates,
@@ -263,6 +273,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                         next.connect()
                         refreshSessions(next, version)
                         refreshModels(next, null, version)
+                        fetchContainers(next, version)
                     }
                     .onSuccess {
                         if (client === next && connectionVersion == version) {
@@ -287,6 +298,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         selectionJob?.cancel()
         refreshJob?.cancel()
         usageJob?.cancel()
+        containersJob?.cancel()
         backgroundSessionJobs.values.forEach(Job::cancel)
         backgroundSessionJobs.clear()
         connectionVersion++
@@ -469,6 +481,83 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             viewModelScope.launch {
                 runCatching { refreshSessions(api, version) }.onFailure(::showError)
             }
+        refreshContainers()
+    }
+
+    private suspend fun fetchContainers(api: HarnessClient, version: Long) {
+        if (client !== api || connectionVersion != version) return
+        _state.update { it.copy(containersLoading = true, containersError = null) }
+        runCatching { api.containers() }
+            .onSuccess { containers ->
+                if (client === api && connectionVersion == version) {
+                    _state.update {
+                        it.copy(
+                            containers = containers,
+                            containersLoading = false,
+                            containersError = null,
+                        )
+                    }
+                }
+            }
+            .onFailure { error ->
+                if (client === api && connectionVersion == version) {
+                    _state.update {
+                        it.copy(
+                            containersLoading = false,
+                            containersError =
+                                ErrorMessage(
+                                    error.message ?: "Container storage could not be loaded"
+                                ),
+                        )
+                    }
+                }
+            }
+    }
+
+    fun refreshContainers() {
+        val api = client ?: return
+        val version = connectionVersion
+        containersJob?.cancel()
+        containersJob = viewModelScope.launch { fetchContainers(api, version) }
+    }
+
+    fun deleteContainer(containerId: String) {
+        val api = client ?: return
+        if (containerId in state.value.deletingContainerIds) return
+        val version = connectionVersion
+        _state.update {
+            it.copy(
+                deletingContainerIds = it.deletingContainerIds + containerId,
+                containersError = null,
+            )
+        }
+        viewModelScope.launch {
+            runCatching { api.deleteContainer(containerId) }
+                .onSuccess {
+                    if (client === api && connectionVersion == version) {
+                        _state.update {
+                            it.copy(
+                                containers =
+                                    it.containers.filterNot { container ->
+                                        container.containerId == containerId
+                                    },
+                                deletingContainerIds = it.deletingContainerIds - containerId,
+                            )
+                        }
+                    }
+                }
+                .onFailure { error ->
+                    if (client === api && connectionVersion == version) {
+                        _state.update {
+                            it.copy(
+                                deletingContainerIds = it.deletingContainerIds - containerId,
+                                containersError =
+                                    ErrorMessage(error.message ?: "Container could not be deleted"),
+                            )
+                        }
+                    }
+                }
+        }
     }
 
     private fun scheduleRefresh() {

@@ -112,6 +112,15 @@ class HarnessClient(
     suspend fun sessions(): List<JsonObject> =
         request("GET", "/sessions").jsonArray.mapNotNull { it as? JsonObject }
 
+    suspend fun containers(): List<HarnessContainer> =
+        request("GET", "/containers").jsonArray.mapNotNull { value ->
+            (value as? JsonObject)?.let(HarnessContainer::fromJson)
+        }
+
+    suspend fun deleteContainer(containerId: String) {
+        request("DELETE", "/containers/${containerId.urlEncode()}")
+    }
+
     suspend fun childSessions(sessionId: String): List<JsonObject> =
         request("GET", "/sessions/${sessionId.urlEncode()}/children").jsonArray.mapNotNull {
             it as? JsonObject
@@ -417,6 +426,7 @@ class HarnessClient(
                     builder.post(
                         (body ?: JsonObject(emptyMap())).toString().toRequestBody(JSON_MEDIA_TYPE)
                     )
+                "DELETE" -> builder.delete()
                 else -> error("Unsupported method")
             }
             client.newCall(builder.build()).execute().use { response ->

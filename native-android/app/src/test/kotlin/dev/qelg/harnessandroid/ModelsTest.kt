@@ -3,6 +3,7 @@ package dev.qelg.harnessandroid
 import dev.qelg.harnessandroid.data.ChatItem
 import dev.qelg.harnessandroid.data.ConnectionConfig
 import dev.qelg.harnessandroid.data.DraftSubmission
+import dev.qelg.harnessandroid.data.HarnessContainer
 import dev.qelg.harnessandroid.data.HarnessSession
 import dev.qelg.harnessandroid.data.ModelCatalog
 import dev.qelg.harnessandroid.data.ModelSelection
@@ -14,7 +15,9 @@ import dev.qelg.harnessandroid.data.attachReasoningToToolOperations
 import dev.qelg.harnessandroid.data.canClearDraft
 import dev.qelg.harnessandroid.data.canMarkSessionRead
 import dev.qelg.harnessandroid.data.confirmedReadAt
+import dev.qelg.harnessandroid.data.containersBySessionSize
 import dev.qelg.harnessandroid.data.filterSessions
+import dev.qelg.harnessandroid.data.formatContainerSize
 import dev.qelg.harnessandroid.data.formatSessionUpdate
 import dev.qelg.harnessandroid.data.groupTimeline
 import dev.qelg.harnessandroid.data.isSafeExternalUrl
@@ -46,6 +49,43 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ModelsTest {
+    @Test
+    fun decodesAndGroupsContainersBySessionSize() {
+        val first =
+            HarnessContainer.fromJson(
+                buildJsonObject {
+                    put("container_id", "first")
+                    put("name", "First")
+                    put("session_id", "session-a")
+                    put("size_bytes", 1024)
+                }
+            )!!
+        val containers =
+            listOf(
+                first,
+                HarnessContainer("second", "Second", "session-b", 4096),
+                HarnessContainer("third", "Third", "session-a", 2048),
+            )
+
+        val groups = containersBySessionSize(containers)
+
+        assertEquals(listOf("session-b", "session-a"), groups.map { it.sessionId })
+        assertEquals(listOf(4096L, 3072L), groups.map { it.sizeBytes })
+        assertEquals(listOf("third", "first"), groups[1].containers.map { it.containerId })
+        assertEquals("1.0 KB", formatContainerSize(1024))
+        assertEquals("1.5 KB", formatContainerSize(1536))
+    }
+
+    @Test
+    fun ignoresContainerRowsWithoutRequiredMeasuredStorageFields() {
+        val missingSize = buildJsonObject {
+            put("container_id", "container")
+            put("session_id", "session")
+        }
+
+        assertEquals(null, HarnessContainer.fromJson(missingSize))
+    }
+
     @Test
     fun searchMatchesTitlePreviewSourceAndIdCaseInsensitively() {
         val sessions =

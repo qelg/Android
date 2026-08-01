@@ -79,6 +79,62 @@ data class HarnessSession(
     }
 }
 
+data class HarnessContainer(
+    val containerId: String,
+    val name: String,
+    val sessionId: String,
+    val sizeBytes: Long,
+) {
+    companion object {
+        fun fromJson(value: JsonObject): HarnessContainer? {
+            val containerId =
+                value.string("container_id")?.takeIf(String::isNotBlank) ?: return null
+            val sessionId = value.string("session_id")?.takeIf(String::isNotBlank) ?: return null
+            val sizeBytes = value["size_bytes"]?.jsonPrimitive?.longOrNull ?: return null
+            if (sizeBytes < 0) return null
+            return HarnessContainer(
+                containerId = containerId,
+                name = value.string("name")?.takeIf(String::isNotBlank) ?: containerId,
+                sessionId = sessionId,
+                sizeBytes = sizeBytes,
+            )
+        }
+    }
+}
+
+data class ContainersForSession(
+    val sessionId: String,
+    val containers: List<HarnessContainer>,
+    val sizeBytes: Long,
+)
+
+fun containersBySessionSize(containers: List<HarnessContainer>): List<ContainersForSession> =
+    containers
+        .groupBy(HarnessContainer::sessionId)
+        .map { (sessionId, sessionContainers) ->
+            ContainersForSession(
+                sessionId = sessionId,
+                containers = sessionContainers.sortedByDescending(HarnessContainer::sizeBytes),
+                sizeBytes = sessionContainers.sumOf(HarnessContainer::sizeBytes),
+            )
+        }
+        .sortedWith(
+            compareByDescending<ContainersForSession>(ContainersForSession::sizeBytes)
+                .thenBy(ContainersForSession::sessionId)
+        )
+
+fun formatContainerSize(sizeBytes: Long): String {
+    if (sizeBytes < 1024) return "$sizeBytes B"
+    val units = listOf("B", "KB", "MB", "GB", "TB", "PB")
+    var value = sizeBytes.toDouble()
+    var unit = 0
+    while (value >= 1024 && unit < units.lastIndex) {
+        value /= 1024
+        unit++
+    }
+    return "%.1f %s".format(java.util.Locale.getDefault(), value, units[unit])
+}
+
 fun modelCatalogForSession(catalog: ModelCatalog, session: HarnessSession): ModelCatalog =
     catalog.selectedFor(session.model)
 
