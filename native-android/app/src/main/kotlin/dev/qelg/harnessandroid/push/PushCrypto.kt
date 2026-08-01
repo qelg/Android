@@ -19,7 +19,9 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 
-/** Encrypts UnifiedPush content for this installation with a non-exportable Android Keystore key. */
+/**
+ * Encrypts UnifiedPush content for this installation with a non-exportable Android Keystore key.
+ */
 object PushCrypto {
     private const val KEYSTORE = "AndroidKeyStore"
     private const val ALIAS = "harness-unifiedpush-v1"
@@ -35,36 +37,41 @@ object PushCrypto {
         return encode(publicKey.encoded)
     }
 
-    fun decrypt(message: ByteArray, instanceId: String): String? = runCatching {
-        val envelope = Json.parseToJsonElement(message.toString(StandardCharsets.UTF_8)).jsonObject
-        check(envelope["version"]?.jsonPrimitive?.contentOrNull == VERSION)
-        val ephemeral = decodePublicKey(required(envelope, "ephemeral_public_key"))
-        val nonce = decode(required(envelope, "nonce"))
-        val ciphertext = decode(required(envelope, "ciphertext"))
-        require(nonce.size == 12)
-        val privateKey =
-            (keyStore().getEntry(ALIAS, null) as? KeyStore.PrivateKeyEntry)?.privateKey
-                ?: return null
-        val agreement = KeyAgreement.getInstance("ECDH")
-        agreement.init(privateKey)
-        agreement.doPhase(ephemeral, true)
-        val secret = agreement.generateSecret()
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(
-            Cipher.DECRYPT_MODE,
-            javax.crypto.spec.SecretKeySpec(hkdf(secret), "AES"),
-            GCMParameterSpec(128, nonce),
-        )
-        cipher.updateAAD(instanceId.toByteArray(StandardCharsets.UTF_8))
-        cipher.doFinal(ciphertext).toString(StandardCharsets.UTF_8)
-    }.getOrNull()
+    fun decrypt(message: ByteArray, instanceId: String): String? =
+        runCatching {
+                val envelope =
+                    Json.parseToJsonElement(message.toString(StandardCharsets.UTF_8)).jsonObject
+                check(envelope["version"]?.jsonPrimitive?.contentOrNull == VERSION)
+                val ephemeral = decodePublicKey(required(envelope, "ephemeral_public_key"))
+                val nonce = decode(required(envelope, "nonce"))
+                val ciphertext = decode(required(envelope, "ciphertext"))
+                require(nonce.size == 12)
+                val privateKey =
+                    (keyStore().getEntry(ALIAS, null) as? KeyStore.PrivateKeyEntry)?.privateKey
+                        ?: return null
+                val agreement = KeyAgreement.getInstance("ECDH")
+                agreement.init(privateKey)
+                agreement.doPhase(ephemeral, true)
+                val secret = agreement.generateSecret()
+                val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+                cipher.init(
+                    Cipher.DECRYPT_MODE,
+                    javax.crypto.spec.SecretKeySpec(hkdf(secret), "AES"),
+                    GCMParameterSpec(128, nonce),
+                )
+                cipher.updateAAD(instanceId.toByteArray(StandardCharsets.UTF_8))
+                cipher.doFinal(ciphertext).toString(StandardCharsets.UTF_8)
+            }
+            .getOrNull()
 
     private fun generateKeyPair() =
         KeyPairGenerator.getInstance("EC", KEYSTORE)
             .apply {
                 initialize(
                     KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_AGREE_KEY)
-                        .setAlgorithmParameterSpec(java.security.spec.ECGenParameterSpec("secp256r1"))
+                        .setAlgorithmParameterSpec(
+                            java.security.spec.ECGenParameterSpec("secp256r1")
+                        )
                         .setDigests(KeyProperties.DIGEST_SHA256)
                         .build()
                 )

@@ -33,8 +33,10 @@ class HarnessPushService : PushService() {
     override fun onMessage(message: PushMessage, instance: String) {
         scope.launch {
             val plaintext =
-                PushCrypto.decrypt(message.content, PushRegistration.instanceId(this@HarnessPushService))
-                    ?: return@launch
+                PushCrypto.decrypt(
+                    message.content,
+                    PushRegistration.instanceId(this@HarnessPushService),
+                ) ?: return@launch
             val payload =
                 runCatching { Json.parseToJsonElement(plaintext).jsonObject }.getOrNull()
                     ?: return@launch
