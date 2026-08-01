@@ -35,6 +35,8 @@ import dev.qelg.harnessandroid.data.updateDrafts
 import dev.qelg.harnessandroid.data.upsertTool
 import java.time.Instant
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
@@ -65,12 +67,14 @@ class ModelsTest {
                     put("id", "child")
                     put("source", "delegate_task")
                     put("parent_session_id", "root")
+                    put("tags", JsonArray(listOf(JsonPrimitive("namer"))))
                     put("end_reason", "compression")
                 }
             )
 
         assertEquals("delegate_task", session.source)
         assertEquals("root", session.parentSessionId)
+        assertEquals(setOf("namer"), session.tags)
         assertEquals("compression", session.endReason)
     }
 
