@@ -17,6 +17,7 @@ data class HarnessSession(
     val active: Boolean = false,
     val runtimeId: String? = null,
     val parentSessionId: String? = null,
+    val tags: Set<String> = emptySet(),
     val endReason: String? = null,
     val model: String? = null,
     val inputTokens: Long = 0L,
@@ -57,6 +58,11 @@ data class HarnessSession(
                             value.string("id") != null && it != id
                         },
                 parentSessionId = value.string("parent_session_id"),
+                tags =
+                    (value["tags"] as? JsonArray)
+                        ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+                        ?.toSet()
+                        .orEmpty(),
                 endReason = value.string("end_reason"),
                 model = value.string("model"),
                 inputTokens = value["input_tokens"]?.jsonPrimitive?.longOrNull ?: 0L,
@@ -718,8 +724,11 @@ fun mergeSessionsById(
 fun directChildSessions(sessions: List<HarnessSession>, sessionId: String): List<HarnessSession> =
     sortSessionsForOverview(sessions.filter { it.parentSessionId == sessionId })
 
+fun HarnessSession.isNamerSession(): Boolean = "namer" in tags
+
 fun childCount(sessions: List<HarnessSession>, sessionId: String): Int {
     val tree = buildSessionTree(sessions)
+    val sessionsById = sessions.associateBy(HarnessSession::id)
     val visited = mutableSetOf<String>()
     val queue = ArrayDeque<String>()
     queue.addAll(tree[sessionId].orEmpty().map { it.id })
@@ -728,7 +737,7 @@ fun childCount(sessions: List<HarnessSession>, sessionId: String): Int {
         if (!visited.add(id)) continue
         queue.addAll(tree[id].orEmpty().map { it.id })
     }
-    return visited.size
+    return visited.count { id -> sessionsById[id]?.isNamerSession() != true }
 }
 
 fun rootSessions(sessions: List<HarnessSession>): List<HarnessSession> =

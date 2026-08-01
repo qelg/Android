@@ -483,11 +483,11 @@ private fun SessionPane(
                                 if (archived) Badge { Text("ARCHIVED") }
                                 if (draft != null) Badge { Text("DRAFT") }
                                 if (children > 0) {
-                                    Badge {
-                                        Text(
-                                            "$children ${if (children == 1) "child" else "children"}"
-                                        )
-                                    }
+                                    Text(
+                                        "$children ${if (children == 1) "child" else "children"}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
                                 }
                                 if (unread > 0) {
                                     Badge { Text("$unread unread") }
@@ -623,9 +623,11 @@ private fun TreePane(
                         Column(horizontalAlignment = Alignment.End) {
                             if (draft != null) Badge { Text("DRAFT") }
                             if (children > 0) {
-                                Badge {
-                                    Text("$children ${if (children == 1) "child" else "children"}")
-                                }
+                                Text(
+                                    "$children ${if (children == 1) "child" else "children"}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
                             if (unread > 0) {
                                 Badge { Text("$unread unread") }
