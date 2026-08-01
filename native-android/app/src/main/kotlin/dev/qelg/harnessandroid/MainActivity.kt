@@ -183,6 +183,7 @@ private fun ConnectionScreen(connect: (ConnectionConfig) -> Unit) {
 private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
     val context = LocalContext.current
     var showPushSettings by rememberSaveable { mutableStateOf(false) }
+    var showContainerStorage by rememberSaveable { mutableStateOf(false) }
     var showSessions by rememberSaveable { mutableStateOf(state.selectedId == null) }
     LaunchedEffect(state.selectedId) { if (state.selectedId != null) showSessions = false }
     val inTree = state.treeParentId != null
@@ -191,7 +192,9 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
         remember(state.sessions, state.treeParentId) {
             state.treeParentId?.let { sessionTreeWithDepth(state.sessions, it) }.orEmpty()
         }
-    BoxWithConstraints(Modifier.fillMaxSize()) {
+    BoxWithConstraints(
+        Modifier.fillMaxSize().fullScreenDetailBackground(active = showContainerStorage)
+    ) {
         val wide = maxWidth >= 760.dp
         BackHandler(enabled = !wide && (!showSessions) && (inChat || inTree)) {
             if (inChat) {
@@ -209,6 +212,7 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
                     vm,
                     Modifier.width(300.dp).fillMaxHeight(),
                     {},
+                    { showContainerStorage = true },
                     { showPushSettings = true },
                 )
                 VerticalDivider()
@@ -221,7 +225,13 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
         } else {
             when {
                 showSessions || (!inTree && !inChat) ->
-                    SessionPane(state, vm, Modifier.fillMaxSize(), { showSessions = false }) {
+                    SessionPane(
+                        state,
+                        vm,
+                        Modifier.fillMaxSize(),
+                        { showSessions = false },
+                        { showContainerStorage = true },
+                    ) {
                         showPushSettings = true
                     }
                 inTree && !inChat -> {
@@ -239,6 +249,18 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
     }
     if (showPushSettings) {
         UnifiedPushSettingsDialog(context as MainActivity) { showPushSettings = false }
+    }
+    if (showContainerStorage) {
+        ContainerStorageScreen(
+            containers = state.containers,
+            sessions = state.sessions,
+            loading = state.containersLoading,
+            error = state.containersError,
+            deletingContainerIds = state.deletingContainerIds,
+            onRefresh = vm::refreshContainers,
+            onDelete = vm::deleteContainer,
+            onDismiss = { showContainerStorage = false },
+        )
     }
     UpdateDialog(state.updateState, vm::downloadUpdate, vm::resetUpdateState)
 }
@@ -369,6 +391,7 @@ private fun SessionPane(
     vm: ChatViewModel,
     modifier: Modifier,
     selected: () -> Unit,
+    openContainerStorage: () -> Unit,
     openPushSettings: () -> Unit,
 ) {
     var showArchived by rememberSaveable { mutableStateOf(false) }
@@ -388,6 +411,9 @@ private fun SessionPane(
             title = { Text("Sessions") },
             windowInsets = WindowInsets(0, 0, 0, 0),
             actions = {
+                IconButton(openContainerStorage) {
+                    Icon(Icons.Default.Storage, "Container storage")
+                }
                 IconButton({ showArchived = !showArchived }) {
                     Icon(
                         Icons.Default.Archive,
@@ -987,6 +1013,9 @@ private fun ChatPane(
                                 ?.size,
                         childCount = children?.size,
                         childError = state.childSessionsErrors[session.id],
+                        containers = state.containers.filter { it.sessionId == session.id },
+                        deletingContainerIds = state.deletingContainerIds,
+                        onDeleteContainer = vm::deleteContainer,
                         onLoadChildren = { vm.loadChildSessions(session.id) },
                         onOpenChildren = { sessionDetail = SessionDetailPage.Children },
                         onOpenEvents = { sessionDetail = SessionDetailPage.Events },
@@ -1188,11 +1217,150 @@ private sealed interface SessionDetailPage {
 }
 
 @Composable
+internal fun ContainerStorageScreen(
+    containers: List<HarnessContainer>,
+    sessions: List<HarnessSession>,
+    loading: Boolean,
+    error: ErrorMessage?,
+    deletingContainerIds: Set<String>,
+    onRefresh: () -> Unit,
+    onDelete: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var pendingDeleteId by rememberSaveable { mutableStateOf<String?>(null) }
+    val pendingDelete = containers.firstOrNull { it.containerId == pendingDeleteId }
+    val sessionTitles = remember(sessions) { sessions.associate { it.id to it.title } }
+    val groups = remember(containers) { containersBySessionSize(containers) }
+    BackHandler(onBack = onDismiss)
+    FullScreenDetailContainer {
+        Column(Modifier.fillMaxSize()) {
+            DetailHeader("Container storage", "Sessions by container size", onDismiss) {
+                IconButton(onRefresh, enabled = !loading) {
+                    Icon(Icons.Default.Refresh, "Refresh container storage")
+                }
+            }
+            HorizontalDivider()
+            when {
+                loading && groups.isEmpty() ->
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                error != null && groups.isEmpty() ->
+                    Column(
+                        Modifier.fillMaxSize().padding(24.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
+                        Text(error.text, color = MaterialTheme.colorScheme.error)
+                        Button(onRefresh) { Text("Retry") }
+                    }
+                groups.isEmpty() ->
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            "No containers with measured storage.",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                else ->
+                    LazyColumn(Modifier.fillMaxSize()) {
+                        error?.let { storageError ->
+                            item {
+                                Text(
+                                    storageError.text,
+                                    Modifier.padding(16.dp),
+                                    color = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
+                        items(groups, key = { it.sessionId }) { group ->
+                            val title =
+                                sessionTitles[group.sessionId] ?: "Session ${group.sessionId}"
+                            ListItem(
+                                headlineContent = { Text(title, maxLines = 1) },
+                                supportingContent = {
+                                    Text(
+                                        "${formatContainerSize(group.sizeBytes)} · ${group.containers.size} ${if (group.containers.size == 1) "container" else "containers"}"
+                                    )
+                                },
+                                leadingContent = { Icon(Icons.Default.Storage, null) },
+                            )
+                            group.containers.forEach { container ->
+                                ListItem(
+                                    headlineContent = { Text(container.name, maxLines = 1) },
+                                    supportingContent = {
+                                        Text(
+                                            "${formatContainerSize(container.sizeBytes)} · ${container.containerId}"
+                                        )
+                                    },
+                                    modifier = Modifier.padding(start = 24.dp),
+                                    trailingContent = {
+                                        IconButton(
+                                            onClick = { pendingDeleteId = container.containerId },
+                                            enabled = container.containerId !in deletingContainerIds,
+                                        ) {
+                                            if (container.containerId in deletingContainerIds)
+                                                CircularProgressIndicator(
+                                                    Modifier.size(20.dp),
+                                                    strokeWidth = 2.dp,
+                                                )
+                                            else
+                                                Icon(
+                                                    Icons.Default.Delete,
+                                                    "Delete ${container.name}",
+                                                )
+                                        }
+                                    },
+                                )
+                            }
+                            HorizontalDivider()
+                        }
+                    }
+            }
+        }
+    }
+    pendingDelete?.let { container ->
+        DeleteContainerDialog(
+            container = container,
+            onConfirm = {
+                pendingDeleteId = null
+                onDelete(container.containerId)
+            },
+            onDismiss = { pendingDeleteId = null },
+        )
+    }
+}
+
+@Composable
+internal fun DeleteContainerDialog(
+    container: HarnessContainer,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Delete container?") },
+        text = {
+            Text(
+                "Delete ${container.name} (${formatContainerSize(container.sizeBytes)})? This cannot be undone."
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text("Delete", color = MaterialTheme.colorScheme.error)
+            }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
 internal fun SessionDetailScreen(
     session: HarnessSession,
     eventCount: Int?,
     childCount: Int? = null,
     childError: ErrorMessage? = null,
+    containers: List<HarnessContainer> = emptyList(),
+    deletingContainerIds: Set<String> = emptySet(),
+    onDeleteContainer: (String) -> Unit = {},
     onLoadChildren: () -> Unit = {},
     onOpenChildren: () -> Unit = {},
     onOpenEvents: () -> Unit,
@@ -1200,6 +1368,8 @@ internal fun SessionDetailScreen(
     onDismiss: () -> Unit,
 ) {
     LaunchedEffect(session.id) { onLoadChildren() }
+    var pendingDeleteId by rememberSaveable(session.id) { mutableStateOf<String?>(null) }
+    val pendingDelete = containers.firstOrNull { it.containerId == pendingDeleteId }
     BackHandler(onBack = onDismiss)
     FullScreenDetailContainer {
         Column(Modifier.fillMaxSize()) {
@@ -1214,6 +1384,42 @@ internal fun SessionDetailScreen(
             }
             HorizontalDivider()
             LazyColumn(Modifier.fillMaxSize()) {
+                if (containers.isNotEmpty()) {
+                    item {
+                        ListItem(
+                            headlineContent = { Text("Container storage") },
+                            supportingContent = {
+                                Text(
+                                    formatContainerSize(
+                                        containers.sumOf(HarnessContainer::sizeBytes)
+                                    )
+                                )
+                            },
+                            leadingContent = { Icon(Icons.Default.Storage, null) },
+                        )
+                    }
+                    items(containers, key = { it.containerId }) { container ->
+                        ListItem(
+                            headlineContent = { Text(container.name, maxLines = 1) },
+                            supportingContent = { Text(formatContainerSize(container.sizeBytes)) },
+                            modifier = Modifier.padding(start = 24.dp),
+                            trailingContent = {
+                                IconButton(
+                                    onClick = { pendingDeleteId = container.containerId },
+                                    enabled = container.containerId !in deletingContainerIds,
+                                ) {
+                                    if (container.containerId in deletingContainerIds)
+                                        CircularProgressIndicator(
+                                            Modifier.size(20.dp),
+                                            strokeWidth = 2.dp,
+                                        )
+                                    else Icon(Icons.Default.Delete, "Delete ${container.name}")
+                                }
+                            },
+                        )
+                    }
+                    item { HorizontalDivider() }
+                }
                 item {
                     ListItem(
                         headlineContent = { Text("Child sessions") },
@@ -1292,6 +1498,16 @@ internal fun SessionDetailScreen(
                 }
             }
         }
+    }
+    pendingDelete?.let { container ->
+        DeleteContainerDialog(
+            container = container,
+            onConfirm = {
+                pendingDeleteId = null
+                onDeleteContainer(container.containerId)
+            },
+            onDismiss = { pendingDeleteId = null },
+        )
     }
 }
 

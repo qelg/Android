@@ -32,6 +32,29 @@ class HarnessClientTest {
     }
 
     @Test
+    fun listsAndDeletesContainers() = runBlocking {
+        server(
+            MockResponse()
+                .setBody(
+                    """[{"container_id":"container_1","name":"workspace","session_id":"session_1","size_bytes":1536}]"""
+                ),
+            MockResponse().setResponseCode(204),
+        ) { client, server ->
+            val container = client.containers().single()
+            client.deleteContainer("container with space")
+
+            assertEquals("container_1", container.containerId)
+            assertEquals("workspace", container.name)
+            assertEquals("session_1", container.sessionId)
+            assertEquals(1536L, container.sizeBytes)
+            assertEquals("/containers", server.takeRequest().path)
+            val delete = server.takeRequest()
+            assertEquals("DELETE", delete.method)
+            assertEquals("/containers/container+with+space", delete.path)
+        }
+    }
+
+    @Test
     fun listsChildSessions() = runBlocking {
         server(
             MockResponse()
