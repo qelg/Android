@@ -15,6 +15,7 @@ import dev.qelg.harnessandroid.data.attachReasoningToToolOperations
 import dev.qelg.harnessandroid.data.canClearDraft
 import dev.qelg.harnessandroid.data.canMarkSessionRead
 import dev.qelg.harnessandroid.data.confirmedReadAt
+import dev.qelg.harnessandroid.data.containerSessionTitle
 import dev.qelg.harnessandroid.data.containersBySessionSize
 import dev.qelg.harnessandroid.data.filterSessions
 import dev.qelg.harnessandroid.data.formatContainerSize
@@ -28,12 +29,14 @@ import dev.qelg.harnessandroid.data.modelSwitchValue
 import dev.qelg.harnessandroid.data.operationReasoning
 import dev.qelg.harnessandroid.data.prettyToolValue
 import dev.qelg.harnessandroid.data.prioritizeSessionsWithDrafts
+import dev.qelg.harnessandroid.data.sessionForContainer
 import dev.qelg.harnessandroid.data.sessionModelForLineage
 import dev.qelg.harnessandroid.data.sessionsWithModelSelection
 import dev.qelg.harnessandroid.data.sortSessionsForOverview
 import dev.qelg.harnessandroid.data.toolCountBreakdown
 import dev.qelg.harnessandroid.data.toolValuePreview
 import dev.qelg.harnessandroid.data.toolValueRows
+import dev.qelg.harnessandroid.data.totalContainerStorageSize
 import dev.qelg.harnessandroid.data.updateDrafts
 import dev.qelg.harnessandroid.data.upsertTool
 import java.time.Instant
@@ -57,23 +60,45 @@ class ModelsTest {
                     put("container_id", "first")
                     put("name", "First")
                     put("session_id", "session-a")
+                    put("session_title", "Session A")
                     put("size_bytes", 1024)
                 }
             )!!
         val containers =
             listOf(
                 first,
-                HarnessContainer("second", "Second", "session-b", 4096),
-                HarnessContainer("third", "Third", "session-a", 2048),
+                HarnessContainer("second", "Second", "session-b", 4096, "Session B"),
+                HarnessContainer("third", "Third", "session-a", 2048, "Session A"),
             )
 
         val groups = containersBySessionSize(containers)
 
         assertEquals(listOf("session-b", "session-a"), groups.map { it.sessionId })
         assertEquals(listOf(4096L, 3072L), groups.map { it.sizeBytes })
+        assertEquals(listOf("Session B", "Session A"), groups.map { it.sessionTitle })
         assertEquals(listOf("third", "first"), groups[1].containers.map { it.containerId })
+        assertEquals(7168L, totalContainerStorageSize(containers))
         assertEquals("1.0 KB", formatContainerSize(1024))
         assertEquals("1.5 KB", formatContainerSize(1536))
+    }
+
+    @Test
+    fun buildsSessionFromContainerTitleWhenSessionIsNotListed() {
+        val container = HarnessContainer("container", "workspace", "missing", 1024, "Stored chat")
+
+        assertEquals("Stored chat", containerSessionTitle(container))
+        assertEquals(
+            HarnessSession("missing", "Stored chat"),
+            sessionForContainer(container, listOf(HarnessSession("listed", "Listed chat"))),
+        )
+        assertEquals(
+            HarnessSession("listed", "Listed chat"),
+            sessionForContainer(
+                container.copy(sessionId = "listed", sessionTitle = "Stale container title"),
+                listOf(HarnessSession("listed", "Listed chat")),
+            ),
+        )
+        assertEquals("Session missing", containerSessionTitle(container.copy(sessionTitle = null)))
     }
 
     @Test

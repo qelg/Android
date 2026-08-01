@@ -36,7 +36,7 @@ class HarnessClientTest {
         server(
             MockResponse()
                 .setBody(
-                    """[{"container_id":"container_1","name":"workspace","session_id":"session_1","size_bytes":1536}]"""
+                    """[{"container_id":"container_1","name":"workspace","session_id":"session_1","session_title":"Container session","size_bytes":1536}]"""
                 ),
             MockResponse().setResponseCode(204),
         ) { client, server ->
@@ -46,6 +46,7 @@ class HarnessClientTest {
             assertEquals("container_1", container.containerId)
             assertEquals("workspace", container.name)
             assertEquals("session_1", container.sessionId)
+            assertEquals("Container session", container.sessionTitle)
             assertEquals(1536L, container.sizeBytes)
             assertEquals("/containers", server.takeRequest().path)
             val delete = server.takeRequest()

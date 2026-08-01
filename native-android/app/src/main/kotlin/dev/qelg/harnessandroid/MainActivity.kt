@@ -259,6 +259,10 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
             deletingContainerIds = state.deletingContainerIds,
             onRefresh = vm::refreshContainers,
             onDelete = vm::deleteContainer,
+            onOpenSession = {
+                vm.selectContainerSession(it)
+                showContainerStorage = false
+            },
             onDismiss = { showContainerStorage = false },
         )
     }
@@ -1225,12 +1229,14 @@ internal fun ContainerStorageScreen(
     deletingContainerIds: Set<String>,
     onRefresh: () -> Unit,
     onDelete: (String) -> Unit,
+    onOpenSession: (HarnessContainer) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var pendingDeleteId by rememberSaveable { mutableStateOf<String?>(null) }
     val pendingDelete = containers.firstOrNull { it.containerId == pendingDeleteId }
     val sessionTitles = remember(sessions) { sessions.associate { it.id to it.title } }
     val groups = remember(containers) { containersBySessionSize(containers) }
+    val totalSize = remember(containers) { totalContainerStorageSize(containers) }
     BackHandler(onBack = onDismiss)
     FullScreenDetailContainer {
         Column(Modifier.fillMaxSize()) {
@@ -1262,6 +1268,23 @@ internal fun ContainerStorageScreen(
                     }
                 else ->
                     LazyColumn(Modifier.fillMaxSize()) {
+                        item {
+                            ListItem(
+                                headlineContent = { Text("Total container storage") },
+                                supportingContent = {
+                                    Text(
+                                        "${containers.size} ${if (containers.size == 1) "container" else "containers"}"
+                                    )
+                                },
+                                trailingContent = {
+                                    Text(
+                                        formatContainerSize(totalSize),
+                                        style = MaterialTheme.typography.titleMedium,
+                                    )
+                                },
+                            )
+                            HorizontalDivider()
+                        }
                         error?.let { storageError ->
                             item {
                                 Text(
@@ -1273,7 +1296,9 @@ internal fun ContainerStorageScreen(
                         }
                         items(groups, key = { it.sessionId }) { group ->
                             val title =
-                                sessionTitles[group.sessionId] ?: "Session ${group.sessionId}"
+                                group.sessionTitle
+                                    ?: sessionTitles[group.sessionId]
+                                    ?: "Session ${group.sessionId}"
                             ListItem(
                                 headlineContent = { Text(title, maxLines = 1) },
                                 supportingContent = {
@@ -1282,6 +1307,17 @@ internal fun ContainerStorageScreen(
                                     )
                                 },
                                 leadingContent = { Icon(Icons.Default.Storage, null) },
+                                modifier =
+                                    Modifier.clickable(
+                                        onClickLabel = "Open $title",
+                                        role = Role.Button,
+                                    ) {
+                                        onOpenSession(
+                                            group.containers
+                                                .first()
+                                                .copy(sessionTitle = group.sessionTitle)
+                                        )
+                                    },
                             )
                             group.containers.forEach { container ->
                                 ListItem(

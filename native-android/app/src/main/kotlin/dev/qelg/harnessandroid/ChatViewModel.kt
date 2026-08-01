@@ -658,6 +658,16 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         }
     }
 
+    fun selectContainerSession(container: HarnessContainer) {
+        if (state.value.connecting || client == null) return
+        val session = sessionForContainer(container, state.value.sessions)
+        _state.update { ui ->
+            if (ui.sessions.any { it.id == session.id }) ui
+            else ui.copy(sessions = mergeSessionsById(ui.sessions, listOf(session)))
+        }
+        select(session)
+    }
+
     fun select(session: HarnessSession, selectedFromTree: Boolean = false) {
         if (state.value.connecting) return
         val api = client ?: return
