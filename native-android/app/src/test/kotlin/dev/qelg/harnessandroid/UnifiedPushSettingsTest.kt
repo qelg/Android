@@ -28,4 +28,19 @@ class UnifiedPushSettingsTest {
         composeRule.onNodeWithText("Enable UnifiedPush").assertIsDisplayed()
         composeRule.onNodeWithText("Register or refresh").assertIsDisplayed()
     }
+
+    @Test
+    fun settingsShowsRegisteredPushUrl() {
+        val endpoint = "https://push.example.test/endpoint"
+        composeRule.activityRule.scenario.onActivity { activity ->
+            activity.setContent {
+                MaterialTheme {
+                    UnifiedPushSettingsDialog(activity, onDismiss = {}, initialEndpoint = endpoint)
+                }
+            }
+        }
+
+        composeRule.onNodeWithText("Push URL").assertIsDisplayed()
+        composeRule.onNodeWithText(endpoint).assertIsDisplayed()
+    }
 }
