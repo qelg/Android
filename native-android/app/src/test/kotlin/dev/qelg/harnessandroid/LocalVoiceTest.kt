@@ -1,6 +1,7 @@
 package dev.qelg.harnessandroid
 
 import dev.qelg.harnessandroid.voice.PcmChunkAccumulator
+import dev.qelg.harnessandroid.voice.WhisperCpuConfig
 import dev.qelg.harnessandroid.voice.WhisperModel
 import dev.qelg.harnessandroid.voice.pcm16ToFloat
 import org.junit.Assert.assertArrayEquals
@@ -37,5 +38,25 @@ class LocalVoiceTest {
         assertEquals(WhisperModel.Base, WhisperModel.fromId("unknown"))
         assertEquals("32 MB", WhisperModel.Tiny.downloadSize)
         assertEquals("574 MB", WhisperModel.LargeTurbo.downloadSize)
+    }
+
+    @Test
+    fun whisperAutomaticThreadsUseConservativeFourThreadDefault() {
+        assertEquals(1, WhisperCpuConfig.automaticThreadCountFor(1))
+        assertEquals(2, WhisperCpuConfig.automaticThreadCountFor(2))
+        assertEquals(4, WhisperCpuConfig.automaticThreadCountFor(8))
+        assertEquals(4, WhisperCpuConfig.automaticThreadCountFor(16))
+    }
+
+    @Test
+    fun whisperThreadSettingAcceptsAutomaticAndOneThroughEight() {
+        assertEquals(true, WhisperCpuConfig.isValid(WhisperCpuConfig.AUTOMATIC))
+        assertEquals(true, WhisperCpuConfig.isValid(1))
+        assertEquals(true, WhisperCpuConfig.isValid(8))
+        assertEquals(false, WhisperCpuConfig.isValid(-1))
+        assertEquals(false, WhisperCpuConfig.isValid(9))
+        (1..8).forEach { configured ->
+            assertEquals(configured, WhisperCpuConfig.resolve(configured))
+        }
     }
 }

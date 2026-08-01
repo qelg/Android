@@ -107,6 +107,7 @@ data class ChatUiState(
     val transcriptionText: String? = null,
     val voiceTargetSessionId: String? = null,
     val whisperModel: WhisperModel = WhisperModel.Base,
+    val whisperThreadCount: Int = WhisperCpuConfig.AUTOMATIC,
     val approval: ApprovalRequest? = null,
     val clarify: ClarifyRequest? = null,
     val error: ErrorMessage? = null,
@@ -192,6 +193,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
             ChatUiState(
                 selectedId = savedState["selectedId"],
                 whisperModel = whisperModelStore.load(),
+                whisperThreadCount = whisperModelStore.loadThreadCount(),
             )
         )
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
@@ -332,7 +334,11 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         runtimeId = null
         usageStoredId = null
         savedState["selectedId"] = null
-        _state.value = ChatUiState(whisperModel = whisperModelStore.load())
+        _state.value =
+            ChatUiState(
+                whisperModel = whisperModelStore.load(),
+                whisperThreadCount = whisperModelStore.loadThreadCount(),
+            )
     }
 
     fun setSearch(value: String) = _state.update { it.copy(search = value) }
@@ -931,6 +937,12 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         _state.update { it.copy(whisperModel = model) }
     }
 
+    fun selectWhisperThreadCount(configured: Int) {
+        require(WhisperCpuConfig.isValid(configured))
+        whisperModelStore.saveThreadCount(configured)
+        _state.update { it.copy(whisperThreadCount = configured) }
+    }
+
     fun toggleShowReasoning() {
         _state.update { it.copy(showReasoning = !it.showReasoning) }
     }
@@ -952,6 +964,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         check(voiceTranscription == null) { "A voice recording is already active" }
         val id = ++voiceTranscriptionSequence
         val model = state.value.whisperModel
+        val threadCount = state.value.whisperThreadCount
         lateinit var transcriber: IncrementalVoiceTranscriber
         val recorder =
             LocalAudioRecorder(
@@ -974,6 +987,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                     localWhisper.transcribe(
                         samples = samples,
                         model = model,
+                        configuredThreadCount = threadCount,
                         onStatus = { status ->
                             viewModelScope.launch { updateVoiceStatus(id, status) }
                         },

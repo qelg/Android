@@ -48,8 +48,10 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import dev.qelg.harnessandroid.data.*
 import dev.qelg.harnessandroid.push.PushCrypto
 import dev.qelg.harnessandroid.push.PushRegistration
+import dev.qelg.harnessandroid.voice.WhisperCpuConfig
 import dev.qelg.harnessandroid.voice.WhisperModel
 import java.text.NumberFormat
+import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 
@@ -817,7 +819,7 @@ private fun ChatPane(
                         onClick = { showWhisperModels = true },
                         enabled = !state.transcribing && !state.voiceRecording,
                     ) {
-                        Icon(Icons.Default.SettingsVoice, "Choose local Whisper model")
+                        Icon(Icons.Default.SettingsVoice, "Local Whisper settings")
                     }
                     IconButton(
                         onClick = {
@@ -1121,8 +1123,10 @@ private fun ChatPane(
     if (showWhisperModels) {
         WhisperModelDialog(
             selected = state.whisperModel,
+            threadCount = state.whisperThreadCount,
             isDownloaded = vm::isWhisperModelDownloaded,
             onSelect = vm::selectWhisperModel,
+            onThreadCountSelect = vm::selectWhisperThreadCount,
             onDismiss = { showWhisperModels = false },
         )
     }
@@ -2896,14 +2900,16 @@ private fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
 @Composable
 private fun WhisperModelDialog(
     selected: WhisperModel,
+    threadCount: Int,
     isDownloaded: (WhisperModel) -> Boolean,
     onSelect: (WhisperModel) -> Unit,
+    onThreadCountSelect: (Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
         icon = { Icon(Icons.Default.SettingsVoice, null) },
-        title = { Text("Local Whisper model") },
+        title = { Text("Local Whisper settings") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 Text(
@@ -2911,6 +2917,61 @@ private fun WhisperModelDialog(
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Spacer(Modifier.height(12.dp))
+                Text("CPU threads", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "More threads are not always faster on phones and can increase heat. Try different values with your usual model.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                val automaticThreads = WhisperCpuConfig.automaticThreadCount
+                val automatic = threadCount == WhisperCpuConfig.AUTOMATIC
+                var manualThreads by
+                    remember(threadCount) {
+                        mutableIntStateOf(
+                            if (automatic) automaticThreads
+                            else WhisperCpuConfig.resolve(threadCount)
+                        )
+                    }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Automatic")
+                        Text(
+                            "$automaticThreads ${if (automaticThreads == 1) "thread" else "threads"} recommended for this device",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = automatic,
+                        onCheckedChange = { enabled ->
+                            onThreadCountSelect(
+                                if (enabled) WhisperCpuConfig.AUTOMATIC else automaticThreads
+                            )
+                        },
+                    )
+                }
+                val displayedThreads = if (automatic) automaticThreads else manualThreads
+                Text(
+                    "Using $displayedThreads ${if (displayedThreads == 1) "thread" else "threads"}",
+                    style = MaterialTheme.typography.labelMedium,
+                )
+                Slider(
+                    value = displayedThreads.toFloat(),
+                    onValueChange = { value -> manualThreads = value.roundToInt() },
+                    onValueChangeFinished = { onThreadCountSelect(manualThreads) },
+                    valueRange = 1f..WhisperCpuConfig.MAX_CONFIGURABLE_THREADS.toFloat(),
+                    steps = WhisperCpuConfig.MAX_CONFIGURABLE_THREADS - 2,
+                    enabled = !automatic,
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("1", style = MaterialTheme.typography.labelSmall)
+                    Text(
+                        WhisperCpuConfig.MAX_CONFIGURABLE_THREADS.toString(),
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                }
+                HorizontalDivider(Modifier.padding(vertical = 10.dp))
+                Text("Model", style = MaterialTheme.typography.titleSmall)
                 WhisperModel.All.forEach { model ->
                     Row(
                         Modifier.fillMaxWidth()

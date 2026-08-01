@@ -1,6 +1,7 @@
 package dev.qelg.harnessandroid.voice
 
 import android.content.Context
+import android.util.Log
 import java.io.Closeable
 import java.io.File
 import java.io.FileOutputStream
@@ -20,9 +21,11 @@ internal object WhisperNative {
         System.loadLibrary("harness-whisper")
     }
 
-    external fun createContext(modelPath: String): Long
+    external fun createContext(modelPath: String, nativeLibraryDir: String): Long
 
     external fun freeContext(pointer: Long)
+
+    external fun systemInfo(): String
 
     external fun transcribe(
         pointer: Long,
@@ -47,10 +50,12 @@ class LocalWhisper(private val context: Context) : Closeable {
     private val closed = AtomicBoolean(false)
     private var nativeContext = 0L
     private var loadedModelId: String? = null
+    private var loggedSystemInfo = false
 
     suspend fun transcribe(
         samples: FloatArray,
         model: WhisperModel,
+        configuredThreadCount: Int = WhisperCpuConfig.AUTOMATIC,
         onStatus: (String) -> Unit,
         initialPrompt: String? = null,
         onProgress: (Int) -> Unit = {},
@@ -63,15 +68,26 @@ class LocalWhisper(private val context: Context) : Closeable {
             check(!closed.get()) { "Whisper is closed" }
             mutex.withLock {
                 val modelFile = ensureModel(model, onStatus)
-                onStatus("Transcribing locally with Whisper ${model.displayName}…")
+                val threads = WhisperCpuConfig.resolve(configuredThreadCount)
+                onStatus(
+                    "Transcribing locally with Whisper ${model.displayName} using " +
+                        "$threads ${if (threads == 1) "thread" else "threads"}…"
+                )
                 synchronized(nativeLock) {
                     check(!closed.get()) { "Whisper is closed" }
                     if (loadedModelId != model.id) {
                         releaseContext()
-                        nativeContext = WhisperNative.createContext(modelFile.path)
+                        nativeContext =
+                            WhisperNative.createContext(
+                                modelFile.path,
+                                context.applicationInfo.nativeLibraryDir,
+                            )
                         loadedModelId = model.id
+                        if (!loggedSystemInfo) {
+                            Log.i("LocalWhisper", WhisperNative.systemInfo())
+                            loggedSystemInfo = true
+                        }
                     }
-                    val threads = (Runtime.getRuntime().availableProcessors() - 2).coerceIn(2, 6)
                     WhisperNative.transcribe(
                             nativeContext,
                             samples,

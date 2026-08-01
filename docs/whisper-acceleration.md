@@ -1,12 +1,37 @@
 # Whisper acceleration on Android
 
-The app currently uses the CPU backend from whisper.cpp v1.7.6. GPU use is explicitly disabled in
-`whisper_jni.cpp`, and the deliberately small vendored source set does not include the Vulkan or
-OpenCL backend implementations.
+The app uses the CPU backend from whisper.cpp v1.7.6. GPU use is explicitly disabled in
+`whisper_jni.cpp`.
 
-## Pixel 9 Pro findings
+## Optimized ARM64 CPU backend
 
-The Pixel 9 Pro uses Tensor G4 and a Mali-G715 GPU. The practical acceleration options are:
+ARM64 builds package four separately compiled ggml CPU modules:
+
+- Armv8.0 baseline;
+- Armv8.2 with dot-product instructions;
+- Armv8.2 with dot product and FP16 vector arithmetic;
+- Armv8.6 with dot product, FP16 vector arithmetic, and i8mm.
+
+Before loading a model, ggml reads Android's `AT_HWCAP` and `AT_HWCAP2` feature flags and loads the
+fastest compatible module. This should select the Armv8.6 module on a Pixel 9 Pro while retaining the
+Armv8.0 fallback for older phones. The modules are extracted at installation so ggml can enumerate
+and load them from the app's native-library directory. Other Android ABIs retain the baseline static
+backend.
+
+The Whisper settings dialog also permits Automatic or 1–8 worker threads. Automatic uses up to four threads, matching the four performance-oriented cores on Tensor G4 while
+leaving its efficiency cores available to Android. The fastest value
+can vary by model, recording length, device temperature, and Android scheduling. The native system
+information, including selected CPU features, is written to Logcat under `LocalWhisper` when the
+first model context is created.
+
+KleidiAI remains disabled: the vendored release would fetch a non-vendored dependency, and its
+principal optimized path does not match the app's Q5 model catalog. OpenMP, fast-math, hard CPU
+affinity, and device-specific global `-march` flags also remain disabled to avoid nested thread pools,
+quality changes, thermal regressions, and crashes on older ARM64 devices.
+
+## Pixel 9 Pro GPU/NPU findings
+
+The Pixel 9 Pro uses Tensor G4 and a Mali-G715 GPU. The practical non-CPU options are:
 
 - **Vulkan:** whisper.cpp has a real Vulkan backend, but Android support is not part of its standard
   Android example and requires a larger coherent upstream source import, shader generation, and a
@@ -27,15 +52,14 @@ The Pixel 9 Pro uses Tensor G4 and a Mali-G715 GPU. The practical acceleration o
   it needs separately converted TFLite encoder/decoder models, tokenizer/generation integration, and
   a new model catalog. It cannot consume the existing GGML downloads.
 
-For now, CPU remains the reliable production backend. The next acceleration experiment should first
-update whisper.cpp and benchmark an optimized ARM64 CPU build (including FP16/KleidiAI where runtime
-CPU checks make it safe), thread counts, and the existing Tiny through Large Turbo models on the
-Pixel 9 Pro. Vulkan is worth a time-boxed opt-in prototype only after that baseline exists.
+Vulkan remains worth a time-boxed opt-in prototype only if the optimized CPU baseline still cannot
+meet the required latency.
 
 Useful upstream references:
 
 - [whisper.cpp Android example](https://github.com/ggml-org/whisper.cpp/tree/v1.9.1/examples/whisper.android)
 - [whisper.cpp Vulkan backend](https://github.com/ggml-org/whisper.cpp/tree/v1.9.1/ggml/src/ggml-vulkan)
+- [Android runtime CPU feature detection](https://developer.android.com/ndk/guides/cpu-features)
 - [Android NNAPI deprecation and migration guidance](https://developer.android.com/ndk/guides/neuralnetworks/migration-guide)
 - [LiteRT GPU acceleration](https://developers.google.com/edge/litert/next/gpu)
 - [Google Tensor SDK](https://developers.google.com/edge/tensor-sdk)

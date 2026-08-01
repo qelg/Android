@@ -73,7 +73,18 @@ class WhisperModelStore(context: Context) {
         preferences.edit().putString(MODEL_KEY, model.id).apply()
     }
 
+    fun loadThreadCount(): Int {
+        val configured = preferences.getInt(THREAD_COUNT_KEY, WhisperCpuConfig.AUTOMATIC)
+        return configured.takeIf(WhisperCpuConfig::isValid) ?: WhisperCpuConfig.AUTOMATIC
+    }
+
+    fun saveThreadCount(configured: Int) {
+        require(WhisperCpuConfig.isValid(configured))
+        preferences.edit().putInt(THREAD_COUNT_KEY, configured).apply()
+    }
+
     private companion object {
         const val MODEL_KEY = "model"
+        const val THREAD_COUNT_KEY = "thread_count"
     }
 }
