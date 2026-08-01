@@ -84,6 +84,7 @@ data class HarnessContainer(
     val name: String,
     val sessionId: String,
     val sizeBytes: Long,
+    val sessionTitle: String? = null,
 ) {
     companion object {
         fun fromJson(value: JsonObject): HarnessContainer? {
@@ -97,6 +98,7 @@ data class HarnessContainer(
                 name = value.string("name")?.takeIf(String::isNotBlank) ?: containerId,
                 sessionId = sessionId,
                 sizeBytes = sizeBytes,
+                sessionTitle = value.string("session_title")?.takeIf(String::isNotBlank),
             )
         }
     }
@@ -106,7 +108,21 @@ data class ContainersForSession(
     val sessionId: String,
     val containers: List<HarnessContainer>,
     val sizeBytes: Long,
+    val sessionTitle: String? = null,
 )
+
+fun totalContainerStorageSize(containers: List<HarnessContainer>): Long =
+    containers.sumOf(HarnessContainer::sizeBytes)
+
+fun containerSessionTitle(container: HarnessContainer): String =
+    container.sessionTitle ?: "Session ${container.sessionId}"
+
+fun sessionForContainer(
+    container: HarnessContainer,
+    sessions: List<HarnessSession>,
+): HarnessSession =
+    sessions.firstOrNull { it.id == container.sessionId }
+        ?: HarnessSession(container.sessionId, containerSessionTitle(container))
 
 fun containersBySessionSize(containers: List<HarnessContainer>): List<ContainersForSession> =
     containers
@@ -115,7 +131,9 @@ fun containersBySessionSize(containers: List<HarnessContainer>): List<Containers
             ContainersForSession(
                 sessionId = sessionId,
                 containers = sessionContainers.sortedByDescending(HarnessContainer::sizeBytes),
-                sizeBytes = sessionContainers.sumOf(HarnessContainer::sizeBytes),
+                sizeBytes = totalContainerStorageSize(sessionContainers),
+                sessionTitle =
+                    sessionContainers.mapNotNull(HarnessContainer::sessionTitle).firstOrNull(),
             )
         }
         .sortedWith(
