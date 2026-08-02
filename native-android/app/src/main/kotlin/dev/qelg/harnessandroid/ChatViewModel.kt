@@ -75,6 +75,23 @@ internal suspend fun <T> runVoiceTranscription(
     }
 }
 
+data class QueuedMessage(
+    val id: Long,
+    val text: String,
+    val mode: MessageQueueMode,
+    val expectedUserMessageOccurrence: Int,
+    val submitting: Boolean = true,
+)
+
+internal fun interface MessageSubmitter {
+    suspend fun submit(
+        sessionId: String,
+        text: String,
+        model: String?,
+        queueMode: MessageQueueMode?,
+    )
+}
+
 data class ChatUiState(
     val configured: Boolean = false,
     val connecting: Boolean = false,
@@ -91,6 +108,8 @@ data class ChatUiState(
     val selectedId: String? = null,
     val treeParentId: String? = null,
     val drafts: Map<String, String> = emptyMap(),
+    val queuedMessages: Map<String, List<QueuedMessage>> = emptyMap(),
+    val submittingMessageSessionIds: Set<String> = emptySet(),
     val unreadCounts: Map<String, Int> = emptyMap(),
     val readUpdates: Map<String, String> = emptyMap(),
     val historyLoadedFor: String? = null,
@@ -123,6 +142,64 @@ data class ChatUiState(
 ) {
     val active: Boolean
         get() = selectedId != null && selectedId in activeSessionIds
+
+    val selectedQueuedMessages: List<QueuedMessage>
+        get() = selectedId?.let { queuedMessages[it] }.orEmpty()
+
+    val submittingMessage: Boolean
+        get() = selectedId in submittingMessageSessionIds
+}
+
+internal fun ChatUiState.withQueuedMessage(sessionId: String, message: QueuedMessage): ChatUiState =
+    copy(
+        queuedMessages =
+            queuedMessages + (sessionId to (queuedMessages[sessionId].orEmpty() + message))
+    )
+
+internal fun ChatUiState.updateQueuedMessage(
+    sessionId: String,
+    messageId: Long,
+    transform: (QueuedMessage) -> QueuedMessage,
+): ChatUiState {
+    val queued = queuedMessages[sessionId].orEmpty()
+    if (queued.none { it.id == messageId }) return this
+    return copy(
+        queuedMessages =
+            queuedMessages +
+                (sessionId to queued.map { if (it.id == messageId) transform(it) else it })
+    )
+}
+
+internal fun ChatUiState.removeQueuedMessage(sessionId: String, messageId: Long): ChatUiState {
+    val remaining = queuedMessages[sessionId].orEmpty().filterNot { it.id == messageId }
+    val updated = queuedMessages.toMutableMap()
+    if (remaining.isEmpty()) updated.remove(sessionId) else updated[sessionId] = remaining
+    return copy(queuedMessages = updated)
+}
+
+internal fun ChatUiState.consumeQueuedMessage(sessionId: String, text: String): ChatUiState {
+    val match = queuedMessages[sessionId].orEmpty().firstOrNull { it.text == text } ?: return this
+    return removeQueuedMessage(sessionId, match.id)
+}
+
+internal fun ChatUiState.reconcileQueuedMessages(
+    sessionId: String,
+    timeline: List<ChatItem>,
+): ChatUiState {
+    val queued = queuedMessages[sessionId].orEmpty()
+    if (queued.isEmpty()) return this
+    val userMessageCounts =
+        timeline
+            .filterIsInstance<ChatItem.Message>()
+            .filter { it.role == "user" }
+            .groupingBy(ChatItem.Message::text)
+            .eachCount()
+    val remaining =
+        queued.filter { (userMessageCounts[it.text] ?: 0) < it.expectedUserMessageOccurrence }
+    if (remaining.size == queued.size) return this
+    val updated = queuedMessages.toMutableMap()
+    if (remaining.isEmpty()) updated.remove(sessionId) else updated[sessionId] = remaining
+    return copy(queuedMessages = updated)
 }
 
 internal fun ChatUiState.timelineFor(sessionId: String): List<ChatItem> =
@@ -182,8 +259,34 @@ internal fun ChatUiState.withSessionState(sessionState: HarnessSessionState): Ch
     )
 }
 
-class ChatViewModel(application: Application, private val savedState: SavedStateHandle) :
-    AndroidViewModel(application) {
+class ChatViewModel
+private constructor(
+    application: Application,
+    private val savedState: SavedStateHandle,
+    initialState: ChatUiState?,
+    initialRuntimeId: String?,
+    private val messageSubmitter: MessageSubmitter?,
+    restoreConnection: Boolean,
+) : AndroidViewModel(application) {
+    constructor(
+        application: Application,
+        savedState: SavedStateHandle,
+    ) : this(application, savedState, null, null, null, true)
+
+    internal constructor(
+        application: Application,
+        savedState: SavedStateHandle,
+        initialState: ChatUiState,
+        messageSubmitter: MessageSubmitter,
+    ) : this(
+        application,
+        savedState,
+        initialState,
+        initialState.selectedId,
+        messageSubmitter,
+        false,
+    )
+
     private val credentials = SecureCredentials(application)
     private val draftStore = DraftStore(application)
     private val readStateStore = ReadStateStore(application)
@@ -191,18 +294,19 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     private val whisperModelStore = WhisperModelStore(application)
     private val _state =
         MutableStateFlow(
-            ChatUiState(
-                selectedId = savedState["selectedId"],
-                whisperModel = whisperModelStore.load(),
-                whisperThreadCount = whisperModelStore.loadThreadCount(),
-            )
+            initialState
+                ?: ChatUiState(
+                    selectedId = savedState["selectedId"],
+                    whisperModel = whisperModelStore.load(),
+                    whisperThreadCount = whisperModelStore.loadThreadCount(),
+                )
         )
     val state: StateFlow<ChatUiState> = _state.asStateFlow()
     val updateManager = UpdateManager(application)
     private var draftNamespace = ""
     private val draftRevisions = mutableMapOf<Pair<String, String>, Long>()
     private var client: HarnessClient? = null
-    private var runtimeId: String? = null
+    private var runtimeId: String? = initialRuntimeId
     private var usageStoredId: String? = null
     private var connectionJob: Job? = null
     private var eventJob: Job? = null
@@ -216,14 +320,17 @@ class ChatViewModel(application: Application, private val savedState: SavedState
     private var selectionVersion = 0L
     private var historyRequestVersion = 0L
     private var liveMessageSequence = 0L
+    private var queuedMessageSequence = 0L
     private var voiceTranscriptionSequence = 0L
     private var voiceTranscription: ActiveVoiceTranscription? = null
     private val runtimeToStored = mutableMapOf<String, String>()
     private val sessionModelOverrides = mutableMapOf<String, String>()
 
     init {
-        credentials.load()?.let(::connect)
-        syncUpdateState()
+        if (restoreConnection) {
+            credentials.load()?.let(::connect)
+            syncUpdateState()
+        }
     }
 
     fun connect(config: ConnectionConfig) {
@@ -273,6 +380,8 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 containersError = null,
                 deletingContainerIds = emptySet(),
                 drafts = drafts,
+                queuedMessages = emptyMap(),
+                submittingMessageSessionIds = emptySet(),
                 unreadCounts = emptyMap(),
                 readUpdates = readUpdates,
                 historyLoadedFor = null,
@@ -635,11 +744,13 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                         return@runCatching
                     _state.update {
                         val items = reconcileHistoryItems(history, it.items, baseline)
-                        if (items === it.items)
-                            it.copy(connecting = false, historyLoadedFor = storedId)
-                        else
-                            it.withCurrentItems(items)
-                                .copy(connecting = false, historyLoadedFor = storedId)
+                        val updated =
+                            if (items === it.items)
+                                it.copy(connecting = false, historyLoadedFor = storedId)
+                            else
+                                it.withCurrentItems(items)
+                                    .copy(connecting = false, historyLoadedFor = storedId)
+                        updated.reconcileQueuedMessages(storedId, items)
                     }
                 }
                 .onFailure {
@@ -769,6 +880,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                                     historyLoadedFor = session.id,
                                     modelCatalog = it.modelCatalog.selectedFor(selectedModel),
                                 )
+                                .reconcileQueuedMessages(session.id, items)
                         }
                         api.watchSession(session.id, historyRows.latestEventId())
                         runCatching { refreshModels(api, session, connectionVersion) }
@@ -882,40 +994,97 @@ class ChatViewModel(application: Application, private val savedState: SavedState
         }
     }
 
-    fun send(text: String) {
+    fun send(text: String, queueMode: MessageQueueMode? = null) {
         val clean = text.trim()
         val current = state.value
-        if (clean.isEmpty() || current.active || current.connecting) return
+        if (clean.isEmpty() || current.connecting || current.submittingMessage) return
+        if (current.active != (queueMode != null)) return
         val storedId = current.selectedId ?: return
         val targetRuntimeId = runtimeId ?: storedId
         val model = current.modelCatalog.selected?.model
         val submittedDraft = captureDraftSubmission(storedId, text)
-        val pending =
-            ChatItem.Message(
-                "user",
-                clean,
-                timestamp = Instant.now(),
-                uiKey = "live:${++liveMessageSequence}",
-                pendingCanonical = true,
-            )
-        _state.update {
-            val timeline = it.timelineFor(storedId) + pending
-            it.withTimeline(storedId, timeline)
-                .copy(activeSessionIds = it.activeSessionIds + storedId, error = null)
+        val queuedMessage =
+            queueMode?.let {
+                val existingOccurrences =
+                    current.timelineFor(storedId).count {
+                        it is ChatItem.Message && it.role == "user" && it.text == clean
+                    }
+                val earlierQueued =
+                    current.queuedMessages[storedId].orEmpty().count { it.text == clean }
+                QueuedMessage(
+                    id = ++queuedMessageSequence,
+                    text = clean,
+                    mode = it,
+                    expectedUserMessageOccurrence = existingOccurrences + earlierQueued + 1,
+                )
+            }
+        if (queuedMessage != null) {
+            _state.update {
+                it.withQueuedMessage(storedId, queuedMessage)
+                    .copy(
+                        submittingMessageSessionIds = it.submittingMessageSessionIds + storedId,
+                        error = null,
+                    )
+            }
+        } else {
+            val pending =
+                ChatItem.Message(
+                    "user",
+                    clean,
+                    timestamp = Instant.now(),
+                    uiKey = "live:${++liveMessageSequence}",
+                    pendingCanonical = true,
+                )
+            _state.update {
+                val timeline = it.timelineFor(storedId) + pending
+                it.withTimeline(storedId, timeline)
+                    .copy(
+                        activeSessionIds = it.activeSessionIds + storedId,
+                        submittingMessageSessionIds = it.submittingMessageSessionIds + storedId,
+                        error = null,
+                    )
+            }
         }
         viewModelScope.launch {
-            runCatching { client?.submit(targetRuntimeId, clean, model) ?: error("Not connected") }
-                .onSuccess { submittedDraft?.let(::clearDraft) }
+            runCatching {
+                    messageSubmitter?.submit(targetRuntimeId, clean, model, queueMode)
+                        ?: client?.submit(targetRuntimeId, clean, model, queueMode)
+                        ?: error("Not connected")
+                }
+                .onSuccess {
+                    _state.update { state ->
+                        val updated =
+                            if (queuedMessage == null) state
+                            else
+                                state.updateQueuedMessage(storedId, queuedMessage.id) {
+                                    it.copy(submitting = false)
+                                }
+                        updated.copy(
+                            submittingMessageSessionIds =
+                                updated.submittingMessageSessionIds - storedId
+                        )
+                    }
+                    submittedDraft?.let(::clearDraft)
+                }
                 .onFailure { error ->
                     val now = Instant.now()
                     _state.update {
-                        val timeline = cancelRunningTools(it.timelineFor(storedId), now)
-                        it.withTimeline(storedId, timeline)
-                            .copy(
-                                activeSessionIds = it.activeSessionIds - storedId,
-                                approval = null,
-                                clarify = null,
-                            )
+                        val updated =
+                            if (queuedMessage != null) {
+                                it.removeQueuedMessage(storedId, queuedMessage.id)
+                            } else {
+                                val timeline = cancelRunningTools(it.timelineFor(storedId), now)
+                                it.withTimeline(storedId, timeline)
+                                    .copy(
+                                        activeSessionIds = it.activeSessionIds - storedId,
+                                        approval = null,
+                                        clarify = null,
+                                    )
+                            }
+                        updated.copy(
+                            submittingMessageSessionIds =
+                                updated.submittingMessageSessionIds - storedId
+                        )
                     }
                     showError(error)
                 }
@@ -1221,6 +1390,7 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                             val timeline = reconcileHistoryItems(history, existing, existing)
                             it.withTimeline(storedSessionId, timeline)
                                 .copy(activeSessionIds = it.activeSessionIds - storedSessionId)
+                                .reconcileQueuedMessages(storedSessionId, timeline)
                         }
                         incrementUnread(storedSessionId)
                         refreshSessions(api, expectedConnectionVersion)
@@ -1507,6 +1677,10 @@ class ChatViewModel(application: Application, private val savedState: SavedState
                 }
             }
             "message.user" -> {
+                val text = event.payload["text"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                state.value.selectedId?.let { selectedId ->
+                    _state.update { it.consumeQueuedMessage(selectedId, text) }
+                }
                 reloadHistory()
                 scheduleRefresh()
             }
@@ -1730,6 +1904,9 @@ class ChatViewModel(application: Application, private val savedState: SavedState
 internal fun messagesFromHistoryRow(row: JsonObject): List<ChatItem> {
     val role = row.string("role") ?: "assistant"
     val eventName = row.string("event_name")
+    // queued.message is a pending command, not chat history. It becomes a
+    // canonical user message only when the server releases it at its boundary.
+    if (eventName == "queued.message") return emptyList()
     val timestamp = row.instant()
     if (role == "tool_request" || eventName == "tool.call.requested")
         return listOf(

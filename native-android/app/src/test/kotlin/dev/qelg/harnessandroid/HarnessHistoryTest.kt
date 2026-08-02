@@ -66,4 +66,15 @@ class HarnessHistoryTest {
         assertEquals("{\"cmd\":\"pwd\"}", tool.arguments)
         assertEquals("/work", tool.result)
     }
+
+    @Test
+    fun queuedCommandsAreNotRenderedAsDeliveredUserMessages() {
+        val row =
+            Json.parseToJsonElement(
+                    """{"id":7,"role":"user","event_name":"queued.message","queue_mode":"after_response","content":"wait for this"}"""
+                )
+                .jsonObject
+
+        assertEquals(emptyList<ChatItem>(), messagesFromHistoryRow(row))
+    }
 }
