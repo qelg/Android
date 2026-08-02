@@ -2,6 +2,7 @@ package dev.qelg.harnessandroid
 
 import dev.qelg.harnessandroid.data.ChatItem
 import dev.qelg.harnessandroid.data.HarnessSession
+import dev.qelg.harnessandroid.data.SessionEvent
 import dev.qelg.harnessandroid.data.formatClockTime
 import java.time.Instant
 import java.time.ZoneId
@@ -30,6 +31,30 @@ class TimelineStateTest {
             listOf<ChatItem>(ChatItem.Message("assistant", "Hello", "m1")),
             messagesFromHistoryRow(row),
         )
+    }
+
+    @Test
+    fun durableSecretAskIsRestoredUntilItsToolReply() {
+        val ask =
+            SessionEvent.fromJson(
+                Json.parseToJsonElement(
+                        """{"id":10,"name":"secret.ask","payload":{"description":"GitHub token","identifier":"secret-id","container":"container"}}"""
+                    )
+                    .jsonObject
+            )
+        val result =
+            SessionEvent.fromJson(
+                Json.parseToJsonElement(
+                        """{"id":12,"name":"chat.message.tool.created","payload":{"tool":"retrieve-secret","metadata":{"secret_ask_event_id":10}}}"""
+                    )
+                    .jsonObject
+            )
+
+        val pending = pendingSecretFromEvents(listOf(ask))
+        assertNotNull(pending)
+        assertEquals(10L, pending!!.eventId)
+        assertEquals("GitHub token", pending.description)
+        assertNull(pendingSecretFromEvents(listOf(ask, result)))
     }
 
     @Test
