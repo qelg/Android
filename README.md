@@ -33,8 +33,12 @@ is accepted only for localhost, private-network addresses, and Tailscale hosts.
 ## Build and test
 
 ```bash
-./native-android/gradlew -p native-android spotlessCheck lintDebug testDebugUnitTest assembleDebug assembleDebugAndroidTest
+nix run .#gradle -- spotlessCheck lintDebug testDebugUnitTest assembleDebug assembleDebugAndroidTest
 ```
+
+The Nix runner provides JDK 17 and the Android SDK components required by this
+project (API 35, build-tools 34.0.0 and 35.0.0, NDK 27.2.12479018, and CMake 3.22.1).
+Pass any Gradle tasks or options after `--`.
 
 ## UnifiedPush
 
