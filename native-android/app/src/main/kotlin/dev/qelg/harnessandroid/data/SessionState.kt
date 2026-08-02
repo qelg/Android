@@ -15,8 +15,15 @@ data class HarnessSessionState(
     val eventId: Long? = null,
     val createdAtMs: Long? = null,
 ) {
-    val running: Boolean
+    val live: Boolean
         get() = state == "running"
+
+    val secretAsk: Boolean
+        get() = state == "secret.ask"
+
+    /** True while the session still has an unfinished workflow. */
+    val running: Boolean
+        get() = live || secretAsk
 
     val finished: Boolean
         get() = state == "finished"
@@ -67,7 +74,8 @@ fun isSessionRead(session: HarnessSession, legacyReadAt: String?): Boolean =
 
 fun formatSessionState(state: HarnessSessionState): String =
     when {
-        state.running -> "Running"
+        state.secretAsk -> "Secret requested"
+        state.live -> "Running"
         state.finished && !state.outcome.isNullOrBlank() -> "Finished · ${state.outcome}"
         state.finished -> "Finished"
         else -> state.state.replaceFirstChar { it.uppercase() }

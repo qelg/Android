@@ -44,11 +44,16 @@ class HarnessPushService : PushService() {
             val payload =
                 runCatching { Json.parseToJsonElement(plaintext).jsonObject }.getOrNull()
                     ?: return@launch
-            if (payload["type"]?.jsonPrimitive?.contentOrNull != "session.finished") return@launch
+            val type = payload["type"]?.jsonPrimitive?.contentOrNull
+            if (type != "session.finished" && type != "session.secret.ask") return@launch
             val sessionId = payload["session_id"]?.jsonPrimitive?.contentOrNull ?: return@launch
-            val title = payload["title"]?.jsonPrimitive?.contentOrNull ?: "Harness session"
-            val content = payload["content"]?.jsonPrimitive?.contentOrNull ?: "Session finished"
-            showNotification(this@HarnessPushService, sessionId, title, content)
+            val sessionTitle = payload["title"]?.jsonPrimitive?.contentOrNull ?: "Harness session"
+            val secretAsk = type == "session.secret.ask"
+            val title = if (secretAsk) "Secret requested · $sessionTitle" else sessionTitle
+            val content =
+                payload["content"]?.jsonPrimitive?.contentOrNull
+                    ?: if (secretAsk) "A secret is required" else "Session finished"
+            showNotification(this@HarnessPushService, sessionId, title, content, secretAsk)
         }
     }
 
@@ -62,10 +67,18 @@ class HarnessPushService : PushService() {
     }
 }
 
-private fun showNotification(context: Context, sessionId: String, title: String, content: String) {
+private fun showNotification(
+    context: Context,
+    sessionId: String,
+    title: String,
+    content: String,
+    secretAsk: Boolean,
+) {
     val manager = context.getSystemService(NotificationManager::class.java)
+    val channelId = if (secretAsk) SECRET_CHANNEL_ID else FINISHED_CHANNEL_ID
+    val channelName = if (secretAsk) "Secret requests" else "Finished sessions"
     manager.createNotificationChannel(
-        NotificationChannel(CHANNEL_ID, "Finished sessions", NotificationManager.IMPORTANCE_DEFAULT)
+        NotificationChannel(channelId, channelName, NotificationManager.IMPORTANCE_DEFAULT)
     )
     val intent =
         Intent(context, MainActivity::class.java).apply {
@@ -80,7 +93,7 @@ private fun showNotification(context: Context, sessionId: String, title: String,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
     val notification =
-        NotificationCompat.Builder(context, CHANNEL_ID)
+        NotificationCompat.Builder(context, channelId)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle(title)
             .setContentText(content)
@@ -92,4 +105,5 @@ private fun showNotification(context: Context, sessionId: String, title: String,
     manager.notify(sessionId.hashCode(), notification)
 }
 
-private const val CHANNEL_ID = "finished_sessions"
+private const val FINISHED_CHANNEL_ID = "finished_sessions"
+private const val SECRET_CHANNEL_ID = "secret_requests"
