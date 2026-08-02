@@ -1,12 +1,78 @@
 #include <jni.h>
 #include <cstdint>
+#include <mutex>
+#include <stdexcept>
 #include <string>
+#include "ggml-backend.h"
 #include "whisper.h"
 
 namespace {
 void throw_runtime(JNIEnv * env, const char * message) {
     jclass type = env->FindClass("java/lang/RuntimeException");
     env->ThrowNew(type, message);
+}
+
+#ifdef HARNESS_GGML_RUNTIME_DISPATCH
+std::once_flag cpu_backend_once;
+bool cpu_backend_loaded = false;
+#endif
+
+bool prepare_cpu_backend(JNIEnv * env, jstring native_library_dir) {
+#ifdef HARNESS_GGML_RUNTIME_DISPATCH
+    if (native_library_dir == nullptr) {
+        throw_runtime(env, "Android native library directory is unavailable");
+        return false;
+    }
+    const char * directory_chars = env->GetStringUTFChars(native_library_dir, nullptr);
+    if (directory_chars == nullptr) return false;
+    const std::string directory(directory_chars);
+    env->ReleaseStringUTFChars(native_library_dir, directory_chars);
+
+    try {
+        std::call_once(cpu_backend_once, [&directory] {
+            // Try the fastest modules first. ggml_backend_load() calls each module's baseline-safe
+            // HWCAP scorer and returns null when its instructions are unsupported. Continuing also
+            // provides a lower-ISA fallback if a compatible higher module fails to load.
+            static const char * variants[] = {
+                "android_armv8.6_1",
+                "android_armv8.2_2",
+                "android_armv8.2_1",
+                "android_armv8.0_1",
+            };
+            for (const char * variant : variants) {
+                const std::string path =
+                    directory + "/libggml-cpu-" + variant + ".so";
+                try {
+                    ggml_backend_load(path.c_str());
+                } catch (const std::exception &) {
+                    continue;
+                }
+                if (ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU) != nullptr) {
+                    cpu_backend_loaded = true;
+                    return;
+                }
+            }
+            // Throwing keeps once_flag retryable instead of permanently caching a transient error.
+            throw std::runtime_error("no compatible backend module could be loaded");
+        });
+    } catch (const std::exception & error) {
+        const std::string message =
+            std::string("Could not load a compatible Whisper CPU backend: ") + error.what();
+        throw_runtime(env, message.c_str());
+        return false;
+    } catch (...) {
+        throw_runtime(env, "Could not load a compatible Whisper CPU backend");
+        return false;
+    }
+    if (!cpu_backend_loaded) {
+        throw_runtime(env, "Could not load a compatible Whisper CPU backend");
+        return false;
+    }
+#else
+    (void) env;
+    (void) native_library_dir;
+#endif
+    return true;
 }
 
 jstring utf8_to_java(JNIEnv * env, const std::string & text) {
@@ -115,7 +181,8 @@ bool abort_transcription(void * user_data) {
 
 extern "C" JNIEXPORT jlong JNICALL
 Java_dev_qelg_harnessandroid_voice_WhisperNative_createContext(
-        JNIEnv * env, jobject, jstring model_path) {
+        JNIEnv * env, jobject, jstring model_path, jstring native_library_dir) {
+    if (!prepare_cpu_backend(env, native_library_dir)) return 0;
     const char * path = env->GetStringUTFChars(model_path, nullptr);
     if (path == nullptr) return 0;
     whisper_context_params params = whisper_context_default_params();
@@ -127,6 +194,11 @@ Java_dev_qelg_harnessandroid_voice_WhisperNative_createContext(
         return 0;
     }
     return reinterpret_cast<jlong>(context);
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_dev_qelg_harnessandroid_voice_WhisperNative_systemInfo(JNIEnv * env, jobject) {
+    return utf8_to_java(env, whisper_print_system_info());
 }
 
 extern "C" JNIEXPORT void JNICALL
