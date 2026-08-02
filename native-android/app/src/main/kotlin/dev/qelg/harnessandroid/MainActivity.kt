@@ -872,9 +872,16 @@ private fun ChatPane(
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     itemsIndexed(blocks, key = ::timelineKey) { _, item ->
-                        TimelineItem(item, showReasoning = state.showReasoning) { tool ->
-                            fullScreenDetail = FullScreenDetail.ToolCall(tool)
-                        }
+                        TimelineItem(
+                            item = item,
+                            showReasoning = state.showReasoning,
+                            onOpenToolDetails = { tool ->
+                                fullScreenDetail = FullScreenDetail.ToolCall(tool)
+                            },
+                            onOpenSystemPrompt = { message ->
+                                fullScreenDetail = FullScreenDetail.SystemPrompt(message)
+                            },
+                        )
                     }
                     if (state.active)
                         item(key = "working") {
@@ -1051,6 +1058,11 @@ private fun ChatPane(
             is FullScreenDetail.ToolCall ->
                 ToolCallScreen(
                     tool = currentToolForDetail(state.items, detail.tool),
+                    onDismiss = { fullScreenDetail = null },
+                )
+            is FullScreenDetail.SystemPrompt ->
+                SystemPromptScreen(
+                    message = detail.message,
                     onDismiss = { fullScreenDetail = null },
                 )
             null -> Unit
@@ -1957,6 +1969,8 @@ private sealed interface FullScreenDetail {
     data class Context(val page: ContextDetailPage) : FullScreenDetail
 
     data class ToolCall(val tool: ChatItem.Tool) : FullScreenDetail
+
+    data class SystemPrompt(val message: ChatItem.Message) : FullScreenDetail
 }
 
 @Composable
@@ -2408,9 +2422,10 @@ private fun TimelineItem(
     item: ChatItem,
     showReasoning: Boolean,
     onOpenToolDetails: (ChatItem.Tool) -> Unit,
+    onOpenSystemPrompt: (ChatItem.Message) -> Unit,
 ) {
     when (item) {
-        is ChatItem.Message -> MessageCard(item, showReasoning)
+        is ChatItem.Message -> MessageCard(item, showReasoning, onOpenSystemPrompt)
         is ChatItem.Tool ->
             ToolCard(item, showReasoning = showReasoning, onOpenDetails = onOpenToolDetails)
         is ChatItem.ParallelToolGroup ->
@@ -2433,8 +2448,16 @@ internal fun shouldDisplayMessage(message: ChatItem.Message, showReasoning: Bool
     message.text.isNotBlank() || (showReasoning && !message.reasoning.isNullOrBlank())
 
 @Composable
-private fun MessageCard(message: ChatItem.Message, showReasoning: Boolean) {
+private fun MessageCard(
+    message: ChatItem.Message,
+    showReasoning: Boolean,
+    onOpenSystemPrompt: (ChatItem.Message) -> Unit,
+) {
     if (!shouldDisplayMessage(message, showReasoning)) return
+    if (message.role == "system") {
+        SystemPromptCard(message, onOpen = { onOpenSystemPrompt(message) })
+        return
+    }
     Row(
         Modifier.fillMaxWidth(),
         horizontalArrangement = if (message.role == "user") Arrangement.End else Arrangement.Start,
@@ -2467,6 +2490,41 @@ private fun MessageCard(message: ChatItem.Message, showReasoning: Boolean) {
                 }
             }
         }
+    }
+}
+
+@Composable
+internal fun SystemPromptCard(message: ChatItem.Message, onOpen: () -> Unit) {
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        shape = RoundedCornerShape(12.dp),
+        modifier =
+            Modifier.widthIn(max = 240.dp)
+                .clickable(
+                    onClickLabel = "Show system prompt",
+                    role = Role.Button,
+                    onClick = onOpen,
+                ),
+    ) {
+        Row(
+            Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("System prompt", style = MaterialTheme.typography.labelMedium)
+            Spacer(Modifier.width(6.dp))
+            Icon(
+                Icons.AutoMirrored.Filled.ArrowForward,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+    }
+}
+
+@Composable
+internal fun SystemPromptScreen(message: ChatItem.Message, onDismiss: () -> Unit) {
+    FullScreenContextDetailScreen(title = "System prompt", onDismiss = onDismiss) {
+        MarkdownText(message.text, Modifier.testTag("system-prompt-markdown"))
     }
 }
 
