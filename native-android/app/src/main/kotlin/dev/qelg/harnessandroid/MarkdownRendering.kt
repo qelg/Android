@@ -14,6 +14,7 @@ import io.noties.markwon.ext.tables.TableAwareMovementMethod
 import io.noties.markwon.ext.tables.TablePlugin
 import io.noties.markwon.ext.tables.TableRowSpan
 import io.noties.markwon.ext.tasklist.TaskListPlugin
+import io.noties.markwon.linkify.LinkifyPlugin
 
 internal fun shouldRenderMarkdown(message: ChatItem.Message): Boolean =
     message.role == "assistant" && !message.pendingCanonical
@@ -41,6 +42,7 @@ private object MarkdownRenderer {
     private fun create(context: Context): Markwon {
         val defaultLinkResolver = LinkResolverDef()
         return Markwon.builder(context)
+            .usePlugin(LinkifyPlugin.create(android.text.util.Linkify.WEB_URLS))
             .usePlugin(TablePlugin.create(context))
             .usePlugin(StrikethroughPlugin.create())
             .usePlugin(TaskListPlugin.create(context))
