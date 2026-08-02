@@ -400,6 +400,7 @@ private fun SessionPane(
     openPushSettings: () -> Unit,
 ) {
     var showArchived by rememberSaveable { mutableStateOf(false) }
+    var searching by rememberSaveable { mutableStateOf(false) }
     val allSessions =
         remember(state.sessions, state.search, state.drafts, showArchived) {
             val matching = filterSessions(state.sessions, state.search)
@@ -416,6 +417,7 @@ private fun SessionPane(
             title = { Text("Sessions") },
             windowInsets = WindowInsets(0, 0, 0, 0),
             actions = {
+                IconButton({ searching = true }) { Icon(Icons.Default.Search, "Search sessions") }
                 IconButton(openContainerStorage) {
                     Icon(Icons.Default.Storage, "Container storage")
                 }
@@ -438,14 +440,26 @@ private fun SessionPane(
                 IconButton(vm::disconnect) { Icon(Icons.AutoMirrored.Filled.Logout, "Disconnect") }
             },
         )
-        OutlinedTextField(
-            state.search,
-            vm::setSearch,
-            Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-            leadingIcon = { Icon(Icons.Default.Search, null) },
-            placeholder = { Text("Search") },
-            singleLine = true,
-        )
+        if (searching) {
+            OutlinedTextField(
+                state.search,
+                vm::setSearch,
+                Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                leadingIcon = { Icon(Icons.Default.Search, null) },
+                trailingIcon = {
+                    IconButton({
+                        vm.setSearch("")
+                        searching = false
+                    }) {
+                        Icon(Icons.Default.Close, "Close search")
+                    }
+                },
+                placeholder = { Text("Search") },
+                singleLine = true,
+            )
+        } else {
+            ChatGptUsageBar(state.chatGptUsage)
+        }
         Button(
             {
                 vm.createSession()
@@ -1157,6 +1171,73 @@ private fun ChatPane(
             },
             onDismiss = { showUsageDetails = false },
         )
+    }
+}
+
+@Composable
+private fun ChatGptUsageBar(usage: ChatGptUsage?) {
+    val windows = usage?.windows.orEmpty()
+    Surface(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+        shape = RoundedCornerShape(12.dp),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text("ChatGPT usage", style = MaterialTheme.typography.labelMedium)
+                Spacer(Modifier.weight(1f))
+                Text(
+                    if (windows.isEmpty()) "Unavailable" else "Usage remaining",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (windows.isEmpty()) return@Column
+            windows.forEachIndexed { index, (name, window) ->
+                if (index > 0) Spacer(Modifier.height(6.dp)) else Spacer(Modifier.height(4.dp))
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(name, style = MaterialTheme.typography.labelSmall)
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "${window.remainingPercent}% left${window.remainingSeconds?.let { " · resets ${formatUsageReset(it)}" }.orEmpty()}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(Modifier.height(3.dp))
+                Row(
+                    Modifier.fillMaxWidth().height(7.dp).clip(RoundedCornerShape(99.dp)).semantics {
+                        contentDescription =
+                            "ChatGPT $name usage: ${window.remainingPercent}% remaining"
+                    }
+                ) {
+                    if (window.remainingPercent > 0)
+                        Spacer(
+                            Modifier.weight(window.remainingPercent.toFloat())
+                                .fillMaxHeight()
+                                .background(MaterialTheme.colorScheme.primary)
+                        )
+                    if (window.remainingPercent < 100)
+                        Spacer(
+                            Modifier.weight((100 - window.remainingPercent).toFloat())
+                                .fillMaxHeight()
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                        )
+                }
+            }
+        }
+    }
+}
+
+internal fun formatUsageReset(remainingSeconds: Long): String {
+    val minutes = (remainingSeconds.coerceAtLeast(0) + 59) / 60
+    val days = minutes / (24 * 60)
+    val hours = (minutes % (24 * 60)) / 60
+    val remainingMinutes = minutes % 60
+    return when {
+        days > 0 -> "${days}d ${hours}h"
+        hours > 0 -> "${hours}h ${remainingMinutes}m"
+        else -> "${remainingMinutes}m"
     }
 }
 
