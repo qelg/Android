@@ -46,6 +46,12 @@ wrapper points at those prebuilt libraries, so local Kotlin-only builds skip the
 entire C++ toolchain and NDK compile. Building through `./gradlew` directly
 (without `-PwhisperNativeDir=...`) falls back to the in-tree CMake build used by CI.
 
+GitHub Actions builds `.#whisperNative` and serves it through the shared
+`qelg` Cachix binary cache, so the C++ toolchain is only compiled once per
+native source change. Set the `CACHIX_AUTH_TOKEN` repository secret (a token
+with write access to the `qelg` cache) to push; pulling is public and needs no
+token.
+
 ## UnifiedPush
 
 Install and configure a UnifiedPush distributor (for example ntfy or Sunup) on the phone. After the app connects to a compatible Harness server, it asks the selected distributor for an endpoint and registers that endpoint with Harness. Android 13 and newer also ask for notification permission. No Google Play Services or FCM configuration is used. On Android 12 and newer, Harness encrypts each notification using an ephemeral P-256 key agreement and AES-GCM; the long-lived private key is non-exportable in Android Keystore, so the distributor receives no message metadata or content.
