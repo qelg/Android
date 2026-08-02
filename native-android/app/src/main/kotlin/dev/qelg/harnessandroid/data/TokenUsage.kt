@@ -141,7 +141,7 @@ data class CumulativeTokenUsage(
                         value.containsKey("cache_write_tokens"),
             )
 
-        fun fromProviderUsage(value: JsonObject): CumulativeTokenUsage {
+        fun fromProviderUsage(value: JsonObject, model: String? = null): CumulativeTokenUsage {
             val inputDetails =
                 (value["input_tokens_details"] as? JsonObject)
                     ?: (value["prompt_tokens_details"] as? JsonObject)
@@ -158,15 +158,22 @@ data class CumulativeTokenUsage(
                 inputDetails.long("cached_tokens").takeIf { it > 0L }
                     ?: inputDetails.long("cache_read_tokens")
             val cacheWrite = inputDetails.long("cache_write_tokens")
+            val inputTokens = (processedInput - cacheRead - cacheWrite).coerceAtLeast(0L)
+            val reportedInputCost = providerInputCost(value)
+            val reportedOutputCost = providerOutputCost(value)
+            val fallbackCost =
+                if (reportedInputCost == null && reportedOutputCost == null)
+                    fallbackModelCost(model, inputTokens, cacheRead, cacheWrite, output)
+                else null
             return CumulativeTokenUsage(
-                inputTokens = (processedInput - cacheRead - cacheWrite).coerceAtLeast(0L),
+                inputTokens = inputTokens,
                 outputTokens = output,
                 cacheReadTokens = cacheRead,
                 cacheWriteTokens = cacheWrite,
                 reasoningTokens = outputDetails.long("reasoning_tokens"),
                 apiCalls = 1,
-                inputCost = providerInputCost(value),
-                outputCost = providerOutputCost(value),
+                inputCost = reportedInputCost ?: fallbackCost?.input,
+                outputCost = reportedOutputCost ?: fallbackCost?.output,
                 cacheMetricsReported =
                     inputDetails.containsKey("cached_tokens") ||
                         inputDetails.containsKey("cache_read_tokens") ||
@@ -174,6 +181,32 @@ data class CumulativeTokenUsage(
             )
         }
     }
+}
+
+private data class ModelCost(val input: Double, val output: Double)
+
+private fun fallbackModelCost(
+    model: String?,
+    inputTokens: Long,
+    cacheReadTokens: Long,
+    cacheWriteTokens: Long,
+    outputTokens: Long,
+): ModelCost? {
+    val rates =
+        when {
+            model?.startsWith("gpt-5.6-") != true -> return null
+            model.endsWith("-luna") -> Triple(0.20, 0.02, 1.20)
+            model.endsWith("-terra") -> Triple(2.00, 0.20, 12.00)
+            model.endsWith("-sol") -> Triple(5.00, 0.50, 30.00)
+            else -> return null
+        }
+    val perMillion = 1_000_000.0
+    return ModelCost(
+        input =
+            ((inputTokens + cacheWriteTokens) * rates.first + cacheReadTokens * rates.second) /
+                perMillion,
+        output = outputTokens * rates.third / perMillion,
+    )
 }
 
 private fun providerInputCost(value: JsonObject): Double? {
@@ -234,7 +267,10 @@ fun providerUsageFromMessage(message: JsonObject): CumulativeTokenUsage? {
             ?: (metadata?.get("usage") as? JsonObject)
             ?: (message["usage"] as? JsonObject)
             ?: return null
-    return CumulativeTokenUsage.fromProviderUsage(usage)
+    return CumulativeTokenUsage.fromProviderUsage(
+        usage,
+        message["model"]?.jsonPrimitive?.contentOrNull,
+    )
 }
 
 fun harnessUsageSnapshot(messages: List<JsonObject>): HarnessUsageSnapshot {

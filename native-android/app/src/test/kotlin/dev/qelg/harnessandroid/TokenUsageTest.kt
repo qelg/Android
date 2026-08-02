@@ -218,7 +218,46 @@ class TokenUsageTest {
         assertEquals(231L, usage.reasoningTokens)
         assertEquals(96694L, usage.totalTokens)
         assertEquals(96, usage.cacheHitPercent)
+        assertEquals(0.064816, usage.inputCost!!, 0.00000001)
+        assertEquals(0.00978, usage.outputCost!!, 0.00000001)
+        assertEquals(0.074596, usage.totalCost!!, 0.00000001)
         assertEquals(1, usage.apiCalls)
+    }
+
+    @Test
+    fun modelCostFallbackUsesEachModelRateAndOnlyWhenProviderCostIsMissing() {
+        fun usage(model: String) =
+            dev.qelg.harnessandroid.data.providerUsageFromMessage(
+                Json.parseToJsonElement(
+                        """{"role":"assistant","model":"$model","metadata":{"provider_response":{"usage":{"input_tokens":1000000,"input_tokens_details":{"cached_tokens":200000,"cache_write_tokens":100000},"output_tokens":1000000}}}}"""
+                    )
+                    .jsonObject
+            )!!
+
+        val luna = usage("gpt-5.6-luna")
+        assertEquals(0.164, luna.inputCost!!, 0.00000001)
+        assertEquals(1.2, luna.outputCost!!, 0.00000001)
+
+        val terra = usage("gpt-5.6-terra")
+        assertEquals(1.64, terra.inputCost!!, 0.00000001)
+        assertEquals(12.0, terra.outputCost!!, 0.00000001)
+
+        val sol = usage("gpt-5.6-sol")
+        assertEquals(4.1, sol.inputCost!!, 0.00000001)
+        assertEquals(30.0, sol.outputCost!!, 0.00000001)
+
+        val reported =
+            dev.qelg.harnessandroid.data.providerUsageFromMessage(
+                Json.parseToJsonElement(
+                        """{"role":"assistant","model":"gpt-5.6-sol","metadata":{"provider_response":{"usage":{"input_tokens":1000000,"output_tokens":1000000,"input_cost":7.0,"output_cost":9.0}}}}"""
+                    )
+                    .jsonObject
+            )!!
+        assertEquals(7.0, reported.inputCost!!, 0.0)
+        assertEquals(9.0, reported.outputCost!!, 0.0)
+
+        assertNull(usage("gpt-5.6-unknown").totalCost)
+        assertNull(usage("other-gpt-5.6-sol").totalCost)
     }
 
     @Test
