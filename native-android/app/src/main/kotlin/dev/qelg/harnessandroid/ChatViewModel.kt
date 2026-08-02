@@ -933,11 +933,10 @@ private constructor(
                         val historyRows = api.history(session.id)
                         val history = messagesFromHistoryRows(historyRows)
                         // A secret request may predate this app process. Rebuild the
-                        // pending request from durable events before starting the live
-                        // stream, instead of relying only on the event callback.
-                        val durableEvents =
-                            runCatching { api.sessionEvents(session.id) }.getOrNull()
-                        val restoredSecret = durableEvents?.let(::pendingSecretFromEvents)
+                        // pending request from the already-loaded message timeline
+                        // before starting the live stream, instead of relying only on
+                        // the event callback or making a second history request.
+                        val restoredSecret = pendingSecretFromHistoryRows(historyRows)
                         if (
                             selectionVersion != version ||
                                 historyRequestVersion != historyVersion ||
@@ -947,8 +946,7 @@ private constructor(
                         _state.update {
                             val items = reconcileHistoryItems(history, it.items, baseline)
                             val withSecret =
-                                if (durableEvents == null) it
-                                else if (restoredSecret == null)
+                                if (restoredSecret == null)
                                     it.copy(pendingSecrets = it.pendingSecrets - session.id)
                                 else
                                     it.copy(
@@ -2020,26 +2018,26 @@ private constructor(
     }
 }
 
-internal fun pendingSecretFromEvents(events: List<SessionEvent>): PendingSecret? {
+internal fun pendingSecretFromHistoryRows(rows: List<JsonObject>): PendingSecret? {
     val pending = linkedMapOf<Long, PendingSecret>()
-    events.forEach { event ->
-        val payload = event.raw["payload"] as? JsonObject ?: return@forEach
-        when (event.name) {
+    rows.forEach { row ->
+        when (row.string("event_name")) {
             "secret.ask" -> {
-                val eventId = event.id ?: return@forEach
-                val identifier = payload.string("identifier") ?: return@forEach
-                val description = payload.string("description") ?: return@forEach
+                val eventId = row["id"]?.jsonPrimitive?.longOrNull ?: return@forEach
+                val metadata = row["metadata"] as? JsonObject ?: return@forEach
+                val identifier = metadata.string("identifier") ?: return@forEach
+                val description = row["content"]?.jsonPrimitive?.contentOrNull ?: return@forEach
                 pending[eventId] =
                     PendingSecret(
                         eventId = eventId,
                         identifier = identifier,
                         description = description,
-                        container = payload.string("container").orEmpty(),
+                        container = metadata.string("container").orEmpty(),
                     )
             }
             "chat.message.tool.created" -> {
-                if (payload.string("tool") != "retrieve-secret") return@forEach
-                val metadata = payload["metadata"] as? JsonObject ?: return@forEach
+                if (row.string("tool") != "retrieve-secret") return@forEach
+                val metadata = row["metadata"] as? JsonObject ?: return@forEach
                 val askEventId = metadata["secret_ask_event_id"]?.jsonPrimitive?.longOrNull
                 if (askEventId != null) pending.remove(askEventId)
             }
