@@ -104,6 +104,7 @@ data class ChatUiState(
     val containersError: ErrorMessage? = null,
     val deletingContainerIds: Set<String> = emptySet(),
     val search: String = "",
+    val chatGptUsage: ChatGptUsage? = null,
     val selectedId: String? = null,
     val treeParentId: String? = null,
     val drafts: Map<String, String> = emptyMap(),
@@ -312,6 +313,7 @@ private constructor(
     private var selectionJob: Job? = null
     private var refreshJob: Job? = null
     private var usageJob: Job? = null
+    private var chatGptUsageJob: Job? = null
     private var containersJob: Job? = null
     private val backgroundSessionJobs = mutableMapOf<String, Job>()
     private var connectionVersion = 0L
@@ -353,6 +355,7 @@ private constructor(
         selectionJob?.cancel()
         refreshJob?.cancel()
         usageJob?.cancel()
+        chatGptUsageJob?.cancel()
         containersJob?.cancel()
         backgroundSessionJobs.values.forEach(Job::cancel)
         backgroundSessionJobs.clear()
@@ -390,6 +393,7 @@ private constructor(
                 error = null,
                 reconnectSeconds = null,
                 tokenUsage = null,
+                chatGptUsage = null,
             )
         }
         eventJob =
@@ -409,6 +413,7 @@ private constructor(
                     .onSuccess {
                         if (client === next && connectionVersion == version) {
                             _state.update { it.copy(connecting = false) }
+                            refreshChatGptUsage()
                             restoreSelection()
                         }
                     }
@@ -430,6 +435,7 @@ private constructor(
         selectionJob?.cancel()
         refreshJob?.cancel()
         usageJob?.cancel()
+        chatGptUsageJob?.cancel()
         containersJob?.cancel()
         backgroundSessionJobs.values.forEach(Job::cancel)
         backgroundSessionJobs.clear()
@@ -618,6 +624,7 @@ private constructor(
                 runCatching { refreshSessions(api, version) }.onFailure(::showError)
             }
         refreshContainers()
+        refreshChatGptUsage()
     }
 
     private suspend fun fetchContainers(api: HarnessClient, version: Long) {
@@ -1493,6 +1500,19 @@ private constructor(
         return resolveStoredSessionId(eventId, runtimeToStored, state.value.sessions)
     }
 
+    private fun refreshChatGptUsage() {
+        val api = client ?: return
+        val version = connectionVersion
+        chatGptUsageJob?.cancel()
+        chatGptUsageJob =
+            viewModelScope.launch {
+                val usage = runCatching { api.chatGptUsage() }.getOrNull() ?: return@launch
+                if (client === api && connectionVersion == version) {
+                    _state.update { it.copy(chatGptUsage = usage) }
+                }
+            }
+    }
+
     private fun refreshTokenUsage() {
         val api = client ?: return
         val runtime = runtimeId ?: return
@@ -1551,6 +1571,12 @@ private constructor(
                 else updated
             }
             if (sessionState.finished && state.value.selectedId == stored) refreshTokenUsage()
+            if (sessionState.finished) {
+                viewModelScope.launch {
+                    delay(1_000)
+                    refreshChatGptUsage()
+                }
+            }
             return
         }
         val current = runtimeId

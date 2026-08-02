@@ -4,9 +4,43 @@ import java.net.Inet4Address
 import java.net.Inet6Address
 import java.net.InetAddress
 import java.net.URI
+import kotlin.math.roundToInt
 import kotlinx.serialization.json.*
 
 @JvmInline value class SessionId(val value: String)
+
+data class ChatGptUsageWindow(val remainingPercent: Int, val remainingSeconds: Long? = null)
+
+data class ChatGptUsage(
+    val primaryWindow: ChatGptUsageWindow? = null,
+    val secondaryWindow: ChatGptUsageWindow? = null,
+) {
+    val windows: List<Pair<String, ChatGptUsageWindow>>
+        get() =
+            listOfNotNull(
+                primaryWindow?.let { "5-hour" to it },
+                secondaryWindow?.let { "Weekly" to it },
+            )
+
+    companion object {
+        fun fromJson(value: JsonObject): ChatGptUsage {
+            val rateLimit = value["rate_limit"] as? JsonObject ?: return ChatGptUsage()
+            fun window(name: String): ChatGptUsageWindow? {
+                val item = rateLimit[name] as? JsonObject ?: return null
+                val remaining =
+                    item["remaining_percent"]?.jsonPrimitive?.doubleOrNull
+                        ?: item["used_percent"]?.jsonPrimitive?.doubleOrNull?.let { 100 - it }
+                        ?: return null
+                return ChatGptUsageWindow(
+                    remainingPercent = remaining.roundToInt().coerceIn(0, 100),
+                    remainingSeconds =
+                        item["remaining_seconds"]?.jsonPrimitive?.longOrNull?.coerceAtLeast(0),
+                )
+            }
+            return ChatGptUsage(window("primary_window"), window("secondary_window"))
+        }
+    }
+}
 
 data class HarnessSession(
     val id: String,
