@@ -455,15 +455,16 @@ class HarnessClient(
         val JSON_MEDIA_TYPE = "application/json".toMediaType()
         val MODEL_OPTIONS =
             mapOf(
-                "mock-llm" to listOf("test-model"),
-                "openai-codex" to listOf("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"),
                 "chatgpt-codex" to listOf("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"),
                 "openrouter" to
                     listOf(
-                        "openai/gpt-4o-mini",
-                        "deepseek/deepseek-v4-flash-latest",
+                        "openai/gpt-oss-120b",
+                        "deepseek/deepseek-v4-flash-0731",
                         "qwen/qwen3.6-35b-a3b",
                         "moonshotai/kimi-k3",
+                        "xiaomi/mimo-v2.5",
+                        "z-ai/glm-5.2",
+                        "minimax/minimax-m3",
                     ),
             )
     }
