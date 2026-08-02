@@ -176,6 +176,20 @@ class HarnessClient(
         )
     }
 
+    suspend fun submitSecret(eventId: Long, identifier: String, secret: String) {
+        withContext(Dispatchers.IO) {
+            val request =
+                requestBuilder("/secrets/$eventId/${identifier.urlEncode()}")
+                    .header("Accept", "application/json")
+                    .post(secret.toRequestBody(SECRET_MEDIA_TYPE))
+                    .build()
+            client.newCall(request).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                check(response.isSuccessful) { "Harness HTTP ${response.code}: $text" }
+            }
+        }
+    }
+
     fun watchSession(sessionId: String, sinceId: Long? = null) {
         stopWatching()
         watcherJob =
@@ -285,6 +299,19 @@ class HarnessClient(
                         "message.delta",
                         sessionId,
                         values("text" to (payload["delta"] ?: JsonPrimitive(""))),
+                    )
+                )
+            "secret.ask" ->
+                eventChannel.send(
+                    GatewayEvent(
+                        "secret.ask",
+                        sessionId,
+                        values(
+                            "event_id" to (eventRecord["id"] ?: JsonPrimitive("")),
+                            "identifier" to (payload["identifier"] ?: JsonPrimitive("")),
+                            "description" to (payload["description"] ?: JsonPrimitive("")),
+                            "container" to (payload["container"] ?: JsonPrimitive("")),
+                        ),
                     )
                 )
             "tool.call.requested" ->
@@ -464,6 +491,7 @@ class HarnessClient(
     private companion object {
         const val RECONNECT_DELAY_MS = 1_000L
         val JSON_MEDIA_TYPE = "application/json".toMediaType()
+        val SECRET_MEDIA_TYPE = "application/octet-stream".toMediaType()
         val MODEL_OPTIONS =
             mapOf(
                 "chatgpt-codex" to listOf("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"),

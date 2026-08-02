@@ -83,6 +83,13 @@ data class QueuedMessage(
     val submitting: Boolean = true,
 )
 
+data class PendingSecret(
+    val eventId: Long,
+    val identifier: String,
+    val description: String,
+    val container: String,
+)
+
 internal fun interface MessageSubmitter {
     suspend fun submit(
         sessionId: String,
@@ -109,6 +116,9 @@ data class ChatUiState(
     val treeParentId: String? = null,
     val drafts: Map<String, String> = emptyMap(),
     val queuedMessages: Map<String, List<QueuedMessage>> = emptyMap(),
+    val pendingSecrets: Map<String, PendingSecret> = emptyMap(),
+    val secretDrafts: Map<String, String> = emptyMap(),
+    val uploadingSecretSessionIds: Set<String> = emptySet(),
     val submittingMessageSessionIds: Set<String> = emptySet(),
     val unreadCounts: Map<String, Int> = emptyMap(),
     val readUpdates: Map<String, String> = emptyMap(),
@@ -145,6 +155,9 @@ data class ChatUiState(
 
     val selectedQueuedMessages: List<QueuedMessage>
         get() = selectedId?.let { queuedMessages[it] }.orEmpty()
+
+    val selectedSecret: PendingSecret?
+        get() = selectedId?.let { pendingSecrets[it] }
 
     val submittingMessage: Boolean
         get() = selectedId in submittingMessageSessionIds
@@ -381,6 +394,9 @@ private constructor(
                 deletingContainerIds = emptySet(),
                 drafts = drafts,
                 queuedMessages = emptyMap(),
+                pendingSecrets = emptyMap(),
+                secretDrafts = emptyMap(),
+                uploadingSecretSessionIds = emptySet(),
                 submittingMessageSessionIds = emptySet(),
                 unreadCounts = emptyMap(),
                 readUpdates = readUpdates,
@@ -492,6 +508,56 @@ private constructor(
         draftRevisions[key] = (draftRevisions[key] ?: 0) + 1
         draftStore.save(draftNamespace, sessionId, text)
         _state.update { it.copy(drafts = updateDrafts(it.drafts, sessionId, text)) }
+    }
+
+    fun setSecretDraft(text: String) {
+        val sessionId = state.value.selectedId ?: return
+        _state.update {
+            val drafts = it.secretDrafts.toMutableMap()
+            if (text.isBlank()) drafts.remove(sessionId) else drafts[sessionId] = text
+            it.copy(secretDrafts = drafts)
+        }
+    }
+
+    fun sendSecret(text: String) {
+        val clean = text
+        val sessionId = state.value.selectedId ?: return
+        val request = state.value.pendingSecrets[sessionId] ?: return
+        if (clean.isEmpty() || sessionId in state.value.uploadingSecretSessionIds) return
+        val api = client ?: return
+        val version = connectionVersion
+        _state.update {
+            it.copy(
+                uploadingSecretSessionIds = it.uploadingSecretSessionIds + sessionId,
+                error = null,
+            )
+        }
+        viewModelScope.launch {
+            runCatching { api.submitSecret(request.eventId, request.identifier, clean) }
+                .onSuccess {
+                    if (client === api && connectionVersion == version) {
+                        _state.update { current ->
+                            val drafts = current.secretDrafts.toMutableMap()
+                            drafts.remove(sessionId)
+                            current.copy(
+                                secretDrafts = drafts,
+                                uploadingSecretSessionIds =
+                                    current.uploadingSecretSessionIds - sessionId,
+                            )
+                        }
+                    }
+                }
+                .onFailure { error ->
+                    if (client === api && connectionVersion == version) {
+                        _state.update {
+                            it.copy(
+                                uploadingSecretSessionIds = it.uploadingSecretSessionIds - sessionId
+                            )
+                        }
+                        showError(error)
+                    }
+                }
+        }
     }
 
     private fun captureDraftSubmission(sessionId: String, text: String): DraftSubmission? {
@@ -1579,8 +1645,37 @@ private constructor(
             }
             return
         }
+        if (event.type == "secret.ask") {
+            val eventId = event.payload["event_id"]?.jsonPrimitive?.longOrNull
+            val identifier = event.payload["identifier"]?.jsonPrimitive?.contentOrNull
+            val description = event.payload["description"]?.jsonPrimitive?.contentOrNull
+            val container = event.payload["container"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            val sessionId = event.sessionId
+            if (
+                sessionId != null &&
+                    eventId != null &&
+                    !identifier.isNullOrBlank() &&
+                    !description.isNullOrBlank()
+            ) {
+                _state.update {
+                    it.copy(
+                        pendingSecrets =
+                            it.pendingSecrets +
+                                (sessionId to
+                                    PendingSecret(eventId, identifier, description, container))
+                    )
+                }
+            }
+            return
+        }
         val current = runtimeId
         if (event.sessionId != null && event.sessionId != current) {
+            if (
+                event.type == "tool.complete" &&
+                    event.payload["name"]?.jsonPrimitive?.contentOrNull == "retrieve-secret"
+            ) {
+                _state.update { it.copy(pendingSecrets = it.pendingSecrets - event.sessionId) }
+            }
             val stored = storedSessionId(event)
             when (event.type) {
                 "session.active" ->
@@ -1730,6 +1825,14 @@ private constructor(
                     listOf("name", "tool", "tool_name").firstNotNullOfOrNull {
                         event.payload[it]?.jsonPrimitive?.contentOrNull
                     } ?: "tool"
+                if (event.type == "tool.complete" && name == "retrieve-secret") {
+                    event.sessionId?.let { sessionId ->
+                        _state.update { current ->
+                            if (sessionId !in current.pendingSecrets) current
+                            else current.copy(pendingSecrets = current.pendingSecrets - sessionId)
+                        }
+                    }
+                }
                 // Clarify is an interactive prompt — the server sends a dedicated
                 // clarify.request event with question + choices.  Do NOT rely on
                 // tool.start here — its payload only carries a context label,
