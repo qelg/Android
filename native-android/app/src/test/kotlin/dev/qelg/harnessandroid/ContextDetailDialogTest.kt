@@ -8,6 +8,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.test.assertIsDisplayed
@@ -16,6 +20,7 @@ import androidx.compose.ui.test.click
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
@@ -71,7 +76,7 @@ class ContextDetailDialogTest {
     }
 
     @Test
-    fun systemPromptUsesMarkdownRendererInItsFullScreenDetail() {
+    fun usageSystemPromptUsesMarkdownRendererInItsFullScreenDetail() {
         setTestContent {
             ContextDetailScreen(
                 page = ContextDetailPage.SystemPrompt,
@@ -80,6 +85,24 @@ class ContextDetailDialogTest {
             )
         }
 
+        composeRule.onNodeWithTag("system-prompt-markdown").assertIsDisplayed()
+    }
+
+    @Test
+    fun systemPromptCardOpensMarkdownDetail() {
+        setTestContent {
+            var opened by remember { mutableStateOf(false) }
+            if (opened) {
+                SystemPromptScreen(
+                    message = ChatItem.Message("system", "# Instructions\n\nUse **Markdown**."),
+                    onDismiss = {},
+                )
+            } else {
+                SystemPromptCard(ChatItem.Message("system", "Full prompt")) { opened = true }
+            }
+        }
+
+        composeRule.onNodeWithText("System prompt").assertIsDisplayed().performClick()
         composeRule.onNodeWithTag("system-prompt-markdown").assertIsDisplayed()
     }
 
