@@ -730,6 +730,7 @@ private fun ChatPane(
     onBack: (() -> Unit)? = null,
 ) {
     val input = state.selectedId?.let(state.drafts::get).orEmpty()
+    val pendingSecret = state.selectedSecret
     var showModels by rememberSaveable(state.selectedId) { mutableStateOf(false) }
     var showWhisperModels by rememberSaveable { mutableStateOf(false) }
     var showUsageDetails by rememberSaveable(state.selectedId) { mutableStateOf(false) }
@@ -1044,39 +1045,75 @@ private fun ChatPane(
             if (state.selectedQueuedMessages.isNotEmpty()) {
                 QueuedMessagesPanel(state.selectedQueuedMessages)
             }
-            if (state.active) {
-                Text(
-                    "Harness is working — choose when to send",
-                    Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
-                VoiceButton(
-                    vm,
-                    recording = state.voiceRecording,
-                    enabled = !state.transcribing && !state.connecting && !state.active,
-                )
-                OutlinedTextField(
-                    input,
-                    vm::setDraft,
-                    Modifier.weight(1f),
-                    placeholder = {
-                        Text(
-                            state.clarify?.question?.takeIf(String::isNotBlank) ?: "Message Harness"
-                        )
-                    },
-                    maxLines = 6,
-                )
-                MessageSendButton(
-                    active = state.active,
-                    enabled = input.isNotBlank() && !state.connecting && !state.submittingMessage,
-                    onSend = {
-                        if (state.clarify != null) vm.answerClarify(input) else vm.send(input)
-                    },
-                    onQueue = { vm.send(input, it) },
-                )
+            if (pendingSecret != null) {
+                Column(
+                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Text("Secret requested", style = MaterialTheme.typography.labelLarge)
+                    Text(
+                        pendingSecret.description,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                val secretInput = state.selectedId?.let(state.secretDrafts::get).orEmpty()
+                Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
+                    OutlinedTextField(
+                        secretInput,
+                        vm::setSecretDraft,
+                        Modifier.weight(1f),
+                        placeholder = { Text("Token") },
+                        visualTransformation =
+                            androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        maxLines = 2,
+                    )
+                    MessageSendButton(
+                        active = false,
+                        enabled =
+                            secretInput.isNotEmpty() &&
+                                state.selectedId !in state.uploadingSecretSessionIds,
+                        onSend = { vm.sendSecret(secretInput) },
+                        onQueue = {},
+                    )
+                }
+            } else {
+                if (state.active) {
+                    Text(
+                        "Harness is working — choose when to send",
+                        Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
+                    VoiceButton(
+                        vm,
+                        recording = state.voiceRecording,
+                        enabled = !state.transcribing && !state.connecting && !state.active,
+                    )
+                    OutlinedTextField(
+                        input,
+                        vm::setDraft,
+                        Modifier.weight(1f),
+                        placeholder = {
+                            Text(
+                                state.clarify?.question?.takeIf(String::isNotBlank)
+                                    ?: "Message Harness"
+                            )
+                        },
+                        maxLines = 6,
+                    )
+                    MessageSendButton(
+                        active = state.active,
+                        enabled =
+                            input.isNotBlank() && !state.connecting && !state.submittingMessage,
+                        onSend = {
+                            if (state.clarify != null) vm.answerClarify(input) else vm.send(input)
+                        },
+                        onQueue = { vm.send(input, it) },
+                    )
+                }
             }
         }
         when (val detail = fullScreenDetail) {

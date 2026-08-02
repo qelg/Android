@@ -198,6 +198,20 @@ class HarnessClientTest {
     }
 
     @Test
+    fun uploadsSecretWithoutJsonEncodingItsValue() = runBlocking {
+        server(MockResponse().setBody("""{\"status\":\"accepted\"}""")) { client, server ->
+            client.submitSecret(42, "secret_id", "top-secret")
+            val request = server.takeRequest()
+            assertEquals("/secrets/42/secret_id", request.path)
+            assertEquals("top-secret", request.body.readUtf8())
+            assertEquals(
+                "application/octet-stream; charset=utf-8",
+                request.getHeader("Content-Type"),
+            )
+        }
+    }
+
+    @Test
     fun watchesSessionDeltasAndCompletionFromLastHistoryEvent() = runBlocking {
         val body =
             """
