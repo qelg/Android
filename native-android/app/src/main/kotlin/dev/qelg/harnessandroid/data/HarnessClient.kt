@@ -461,7 +461,7 @@ class HarnessClient(
                 "openrouter" to
                     listOf(
                         "openai/gpt-4o-mini",
-                        "deepseek/deepseek-v4-flash",
+                        "deepseek/deepseek-v4-flash-latest",
                         "qwen/qwen3.6-35b-a3b",
                         "moonshotai/kimi-k3",
                     ),
