@@ -932,6 +932,12 @@ private constructor(
                         val historyVersion = ++historyRequestVersion
                         val historyRows = api.history(session.id)
                         val history = messagesFromHistoryRows(historyRows)
+                        // A secret request may predate this app process. Rebuild the
+                        // pending request from durable events before starting the live
+                        // stream, instead of relying only on the event callback.
+                        val durableEvents =
+                            runCatching { api.sessionEvents(session.id) }.getOrNull()
+                        val restoredSecret = durableEvents?.let(::pendingSecretFromEvents)
                         if (
                             selectionVersion != version ||
                                 historyRequestVersion != historyVersion ||
@@ -940,7 +946,17 @@ private constructor(
                             return@runCatching
                         _state.update {
                             val items = reconcileHistoryItems(history, it.items, baseline)
-                            it.withCurrentItems(items)
+                            val withSecret =
+                                if (durableEvents == null) it
+                                else if (restoredSecret == null)
+                                    it.copy(pendingSecrets = it.pendingSecrets - session.id)
+                                else
+                                    it.copy(
+                                        pendingSecrets =
+                                            it.pendingSecrets + (session.id to restoredSecret)
+                                    )
+                            withSecret
+                                .withCurrentItems(items)
                                 .copy(
                                     connecting = false,
                                     historyLoadedFor = session.id,
@@ -2002,6 +2018,34 @@ private constructor(
         client = null
         super.onCleared()
     }
+}
+
+internal fun pendingSecretFromEvents(events: List<SessionEvent>): PendingSecret? {
+    val pending = linkedMapOf<Long, PendingSecret>()
+    events.forEach { event ->
+        val payload = event.raw["payload"] as? JsonObject ?: return@forEach
+        when (event.name) {
+            "secret.ask" -> {
+                val eventId = event.id ?: return@forEach
+                val identifier = payload.string("identifier") ?: return@forEach
+                val description = payload.string("description") ?: return@forEach
+                pending[eventId] =
+                    PendingSecret(
+                        eventId = eventId,
+                        identifier = identifier,
+                        description = description,
+                        container = payload.string("container").orEmpty(),
+                    )
+            }
+            "chat.message.tool.created" -> {
+                if (payload.string("tool") != "retrieve-secret") return@forEach
+                val metadata = payload["metadata"] as? JsonObject ?: return@forEach
+                val askEventId = metadata["secret_ask_event_id"]?.jsonPrimitive?.longOrNull
+                if (askEventId != null) pending.remove(askEventId)
+            }
+        }
+    }
+    return pending.values.lastOrNull()
 }
 
 internal fun messagesFromHistoryRow(row: JsonObject): List<ChatItem> {
