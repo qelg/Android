@@ -471,7 +471,13 @@ private fun SessionPane(
                     onArchive = { vm.archiveSession(session.id) },
                 ) {
                     ListItem(
-                        headlineContent = { Text(session.title, maxLines = 1) },
+                        headlineContent = {
+                            Text(
+                                session.title,
+                                maxLines = 2,
+                                style = MaterialTheme.typography.titleSmall,
+                            )
+                        },
                         supportingContent = {
                             Column {
                                 if (draft != null)
