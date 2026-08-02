@@ -20,6 +20,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
 import dev.qelg.harnessandroid.data.ChatItem
+import dev.qelg.harnessandroid.data.TokenUsageState
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -67,6 +68,19 @@ class ContextDetailDialogTest {
 
         composeRule.onNodeWithTag("full-screen-detail").assertIsDisplayed()
         composeRule.onNodeWithText("Details currently unavailable.").assertIsDisplayed()
+    }
+
+    @Test
+    fun systemPromptUsesMarkdownRendererInItsFullScreenDetail() {
+        setTestContent {
+            ContextDetailScreen(
+                page = ContextDetailPage.SystemPrompt,
+                usage = TokenUsageState(systemPrompt = "# Instructions\n\nUse **Markdown**."),
+                onDismiss = {},
+            )
+        }
+
+        composeRule.onNodeWithTag("system-prompt-markdown").assertIsDisplayed()
     }
 
     @Test

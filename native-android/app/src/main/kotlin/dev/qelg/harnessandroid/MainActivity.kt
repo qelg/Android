@@ -2074,10 +2074,12 @@ internal fun ContextDetailScreen(
     when (page) {
         ContextDetailPage.SystemPrompt ->
             FullScreenContextDetailScreen(title = "System prompt", onDismiss = onDismiss) {
-                Text(
-                    usage?.systemPrompt ?: "Details currently unavailable.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
+                val systemPrompt = usage?.systemPrompt
+                if (systemPrompt == null) {
+                    Text("Details currently unavailable.")
+                } else {
+                    MarkdownText(systemPrompt, Modifier.testTag("system-prompt-markdown"))
+                }
             }
         ContextDetailPage.ToolDefinitions ->
             FullScreenContextDetailScreen(title = "Tool definitions", onDismiss = onDismiss) {
