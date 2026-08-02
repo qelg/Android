@@ -21,6 +21,21 @@ jobs:
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
       - uses: gradle/actions/wrapper-validation@v4
+      - name: Install Nix
+        uses: cachix/install-nix-action@a49548c11d9846ad46ecc0115273879b045f001c # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Configure Cachix
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+        with:
+          name: qelg
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' || secrets.CACHIX_AUTH_TOKEN == '' }}
+      - name: Build native whisper libraries (cached via Nix/Cachix)
+        run: |
+          nix build .#whisperNative
+          echo "WHISPER_NATIVE_DIR=$(readlink -f result)" >> "$GITHUB_ENV"
       - name: Compute version
         run: |
           VERSION_CODE=$(git rev-list --count HEAD)
@@ -41,7 +56,7 @@ jobs:
           echo "VERSION_CODE=$VERSION_CODE" >> "$GITHUB_ENV"
           echo "VERSION_NAME=$VERSION_NAME" >> "$GITHUB_ENV"
           echo "versionCode=$VERSION_CODE  versionName=$VERSION_NAME"
-      - run: ./native-android/gradlew -p native-android -PversionCode="$VERSION_CODE" -PversionName="$VERSION_NAME" spotlessCheck lintDebug testDebugUnitTest assembleDebug assembleDebugAndroidTest
+      - run: ./native-android/gradlew -p native-android -PversionCode="$VERSION_CODE" -PversionName="$VERSION_NAME" -PwhisperNativeDir="$WHISPER_NATIVE_DIR" spotlessCheck lintDebug testDebugUnitTest assembleDebug assembleDebugAndroidTest
       - uses: actions/upload-artifact@v4
         with:
           name: harness-android-preview
@@ -59,6 +74,21 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
+      - name: Install Nix
+        uses: cachix/install-nix-action@a49548c11d9846ad46ecc0115273879b045f001c # v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - name: Configure Cachix
+        uses: cachix/cachix-action@5f2d7c5294214f71b873db4b969586b980625e71 # v17
+        with:
+          name: qelg
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          skipPush: ${{ github.event_name != 'push' || github.ref != 'refs/heads/main' || secrets.CACHIX_AUTH_TOKEN == '' }}
+      - name: Build native whisper libraries (cached via Nix/Cachix)
+        run: |
+          nix build .#whisperNative
+          echo "WHISPER_NATIVE_DIR=$(readlink -f result)" >> "$GITHUB_ENV"
       - name: Compute version
         run: |
           VERSION_CODE=$(git rev-list --count HEAD)
@@ -94,7 +124,7 @@ jobs:
           printf 'storePassword=%s\nkeyPassword=%s\nkeyAlias=%s\nstoreFile=../upload-keystore.jks\n' \
             "$ANDROID_KEYSTORE_PASSWORD" "$ANDROID_KEY_PASSWORD" "$ANDROID_KEY_ALIAS" \
             > native-android/key.properties
-      - run: ./native-android/gradlew -p native-android -PversionCode="$VERSION_CODE" -PversionName="$VERSION_NAME" assembleRelease
+      - run: ./native-android/gradlew -p native-android -PversionCode="$VERSION_CODE" -PversionName="$VERSION_NAME" -PwhisperNativeDir="$WHISPER_NATIVE_DIR" assembleRelease
       - name: Prepare stable APK filename
         run: cp native-android/app/build/outputs/apk/release/app-release.apk harness-android-latest.apk
       - uses: actions/upload-artifact@v4

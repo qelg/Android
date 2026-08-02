@@ -30,6 +30,16 @@ if (keyPropertiesFile.exists()) {
 val resolvedVersionCode: Int = (project.findProperty("versionCode") as? String)?.toInt() ?: 1
 val resolvedVersionName: String = project.findProperty("versionName") as? String ?: "0.1.0-dev"
 
+/**
+ * Directory containing prebuilt native whisper libraries produced by the whisperNative Nix
+ * derivation, laid out as `jniLibs/<abi>/` with one or more .so files per ABI. Passed by the `nix
+ * run .#gradle` wrapper through `-PwhisperNativeDir=...` and also honored from the
+ * WHISPER_NATIVE_DIR environment variable. When absent, the native code is built from source via
+ * the in-tree CMake project instead (the fallback used by plain CI builds).
+ */
+val whisperNativeDir: String? =
+    (project.findProperty("whisperNativeDir") as? String) ?: System.getenv("WHISPER_NATIVE_DIR")
+
 android {
     namespace = "dev.qelg.harnessandroid"
     compileSdk = 35
@@ -51,11 +61,18 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
     buildFeatures { compose = true }
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "3.22.1"
+    if (whisperNativeDir == null) {
+        // No Nix-provided prebuilt libraries: build whisper from source.
+        externalNativeBuild {
+            cmake {
+                path = file("src/main/cpp/CMakeLists.txt")
+                version = "3.22.1"
+            }
         }
+    } else {
+        // Consume the prebuilt .so files so Kotlin-only rebuilds skip the
+        // entire C++ toolchain and NDK.
+        sourceSets.getByName("main") { jniLibs.srcDirs("$whisperNativeDir/jniLibs") }
     }
     testOptions { unitTests.isIncludeAndroidResources = true }
     packaging {
