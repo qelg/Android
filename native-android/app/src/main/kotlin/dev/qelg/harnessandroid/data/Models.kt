@@ -289,6 +289,11 @@ fun canClearDraft(
         submitted.revision == currentRevision &&
         submitted.text == currentText
 
+enum class MessageQueueMode(val apiValue: String) {
+    AfterNextToolResponse("after_tool"),
+    AfterResponse("after_response"),
+}
+
 enum class ThinkingLevel(val apiValue: String, val displayName: String) {
     None("none", "None"),
     Low("low", "Low"),

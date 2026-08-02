@@ -145,7 +145,38 @@ class HarnessClientTest {
             client.submit("sess_1", "hello")
             val request = server.takeRequest()
             assertEquals("/sessions/sess_1/messages", request.path)
-            assertTrue(request.body.readUtf8().contains("hello"))
+            val body =
+                kotlinx.serialization.json.Json.parseToJsonElement(request.body.readUtf8())
+                    .jsonObject
+            assertEquals("hello", body["content"]?.jsonPrimitive?.content)
+            assertFalse(body.containsKey("queue_mode"))
+        }
+    }
+
+    @Test
+    fun submitsActiveSessionQueueModes() = runBlocking {
+        server(MockResponse().setBody("{}"), MockResponse().setBody("{}")) { client, server ->
+            client.submit(
+                "sess_1",
+                "steer soon",
+                queueMode = MessageQueueMode.AfterNextToolResponse,
+            )
+            client.submit("sess_1", "follow up", queueMode = MessageQueueMode.AfterResponse)
+
+            val afterTool =
+                kotlinx.serialization.json.Json.parseToJsonElement(
+                        server.takeRequest().body.readUtf8()
+                    )
+                    .jsonObject
+            val afterResponse =
+                kotlinx.serialization.json.Json.parseToJsonElement(
+                        server.takeRequest().body.readUtf8()
+                    )
+                    .jsonObject
+            assertEquals("steer soon", afterTool["content"]?.jsonPrimitive?.content)
+            assertEquals("after_tool", afterTool["queue_mode"]?.jsonPrimitive?.content)
+            assertEquals("follow up", afterResponse["content"]?.jsonPrimitive?.content)
+            assertEquals("after_response", afterResponse["queue_mode"]?.jsonPrimitive?.content)
         }
     }
 

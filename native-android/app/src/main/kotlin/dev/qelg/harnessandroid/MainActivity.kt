@@ -1027,6 +1027,17 @@ private fun ChatPane(
                     }
                 }
             }
+            if (state.selectedQueuedMessages.isNotEmpty()) {
+                QueuedMessagesPanel(state.selectedQueuedMessages)
+            }
+            if (state.active) {
+                Text(
+                    "Harness is working — choose when to send",
+                    Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
                 VoiceButton(
                     vm,
@@ -1044,12 +1055,14 @@ private fun ChatPane(
                     },
                     maxLines = 6,
                 )
-                IconButton(
-                    { if (state.clarify != null) vm.answerClarify(input) else vm.send(input) },
-                    enabled = input.isNotBlank() && !state.connecting && !state.active,
-                ) {
-                    Icon(Icons.AutoMirrored.Filled.Send, "Send")
-                }
+                MessageSendButton(
+                    active = state.active,
+                    enabled = input.isNotBlank() && !state.connecting && !state.submittingMessage,
+                    onSend = {
+                        if (state.clarify != null) vm.answerClarify(input) else vm.send(input)
+                    },
+                    onQueue = { vm.send(input, it) },
+                )
             }
         }
         when (val detail = fullScreenDetail) {
@@ -3067,6 +3080,102 @@ private fun WhisperModelDialog(
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Done") } },
     )
+}
+
+internal fun MessageQueueMode.displayName(): String =
+    when (this) {
+        MessageQueueMode.AfterNextToolResponse -> "After next tool response"
+        MessageQueueMode.AfterResponse -> "After response"
+    }
+
+@Composable
+internal fun MessageSendButton(
+    active: Boolean,
+    enabled: Boolean,
+    onSend: () -> Unit,
+    onQueue: (MessageQueueMode) -> Unit,
+) {
+    var showQueueChoices by remember { mutableStateOf(false) }
+    Box {
+        IconButton(
+            onClick = { if (active) showQueueChoices = true else onSend() },
+            enabled = enabled,
+        ) {
+            Icon(Icons.AutoMirrored.Filled.Send, if (active) "Choose when to send" else "Send")
+        }
+        DropdownMenu(expanded = showQueueChoices, onDismissRequest = { showQueueChoices = false }) {
+            DropdownMenuItem(
+                text = {
+                    Column {
+                        Text(MessageQueueMode.AfterNextToolResponse.displayName())
+                        Text(
+                            "Deliver when the next tool finishes",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
+                onClick = {
+                    showQueueChoices = false
+                    onQueue(MessageQueueMode.AfterNextToolResponse)
+                },
+            )
+            DropdownMenuItem(
+                text = {
+                    Column {
+                        Text(MessageQueueMode.AfterResponse.displayName())
+                        Text(
+                            "Wait for the current response to finish",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
+                onClick = {
+                    showQueueChoices = false
+                    onQueue(MessageQueueMode.AfterResponse)
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun QueuedMessagesPanel(messages: List<QueuedMessage>) {
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 4.dp),
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.secondaryContainer,
+        contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+    ) {
+        Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Text(
+                if (messages.size == 1) "Queued message" else "${messages.size} queued messages",
+                style = MaterialTheme.typography.labelLarge,
+            )
+            messages.forEachIndexed { index, message ->
+                if (index > 0) HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (message.submitting) {
+                        CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                    }
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            if (message.submitting) "Queueing…" else message.mode.displayName(),
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                        Text(
+                            message.text,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable

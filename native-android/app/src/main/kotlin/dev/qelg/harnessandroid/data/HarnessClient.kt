@@ -157,11 +157,19 @@ class HarnessClient(
         return session
     }
 
-    suspend fun submit(sessionId: String, text: String, model: String? = null) {
+    suspend fun submit(
+        sessionId: String,
+        text: String,
+        model: String? = null,
+        queueMode: MessageQueueMode? = null,
+    ) {
         request(
             "POST",
             "/sessions/${sessionId.urlEncode()}/messages",
-            buildJsonObject { put("content", text) },
+            buildJsonObject {
+                put("content", text)
+                queueMode?.let { put("queue_mode", it.apiValue) }
+            },
         )
     }
 
