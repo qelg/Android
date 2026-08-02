@@ -126,6 +126,9 @@ class HarnessClient(
             it as? JsonObject
         }
 
+    suspend fun chatGptUsage(): ChatGptUsage =
+        ChatGptUsage.fromJson(request("GET", "/chatgpt/usage").jsonObject)
+
     suspend fun sessionStates(): List<HarnessSessionState> =
         request("GET", "/session-states").jsonArray.mapNotNull {
             (it as? JsonObject)?.let(HarnessSessionState::fromJson)

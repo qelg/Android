@@ -86,6 +86,23 @@ class HarnessClientTest {
     }
 
     @Test
+    fun loadsChatGptUsageWithRemainingRateLimitWindows() = runBlocking {
+        server(
+            MockResponse()
+                .setBody(
+                    """{"rate_limit":{"primary_window":{"remaining_percent":72.4,"remaining_seconds":3000},"secondary_window":{"used_percent":12}}}"""
+                )
+        ) { client, server ->
+            val usage = client.chatGptUsage()
+
+            assertEquals(72, usage.primaryWindow?.remainingPercent)
+            assertEquals(3000L, usage.primaryWindow?.remainingSeconds)
+            assertEquals(88, usage.secondaryWindow?.remainingPercent)
+            assertEquals("/chatgpt/usage", server.takeRequest().path)
+        }
+    }
+
+    @Test
     fun listsAndMarksServerSessionStates() = runBlocking {
         server(
             MockResponse()
