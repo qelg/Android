@@ -1713,7 +1713,14 @@ private constructor(
             viewModelScope.launch { runCatching { refreshSessions(api, version) } }
             return
         }
-        if (event.type == "connection.lost") return
+        if (event.type == "connection.lost") {
+            // Older Harness deployments do not expose /events yet. Keep the
+            // chat usable through the existing per-session SSE stream while
+            // the account-wide connection retries.
+            val selected = state.value.selectedId
+            if (selected != null) client?.watchSession(runtimeId ?: selected)
+            return
+        }
 
         // Keep the event-detail list live when it is already open. Unknown event
         // types are retained as raw events by the transport as well.

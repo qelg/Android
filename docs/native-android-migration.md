@@ -14,7 +14,8 @@ data through another backend. Release signing is documented in `native-android/S
 
 The client loads `/sessions` once and uses its `X-Harness-Event-Cursor` to start the
 account-wide `/events` WebSocket. It subscribes to the event types needed by the
-session list, chat timeline, children, and event-detail view. Durable events carry a
+session list, chat timeline, children, and event-detail view. Message events also carry the server-side `message` projection,
+while the raw event remains available for event details. Durable events carry a
 `cursor`; transient deltas are delivered live but do not advance that cursor.
 
 The socket is stopped while the app is in the background and resumed from the last

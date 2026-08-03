@@ -242,15 +242,13 @@ class HarnessClient(
                         throw cancelled
                     } catch (error: Throwable) {
                         if (isActive && !closed) {
-                            if (hadConnection) {
-                                eventChannel.send(
-                                    GatewayEvent(
-                                        "connection.lost",
-                                        null,
-                                        mapOf("message" to JsonPrimitive(error.message.orEmpty())),
-                                    )
+                            eventChannel.send(
+                                GatewayEvent(
+                                    "connection.lost",
+                                    null,
+                                    mapOf("message" to JsonPrimitive(error.message.orEmpty())),
                                 )
-                            }
+                            )
                             delay(RECONNECT_DELAY_MS)
                         }
                     }
@@ -382,6 +380,7 @@ class HarnessClient(
                         event,
                         event.sessionId().orEmpty(),
                         eventCursor,
+                        frame["message"] as? JsonObject,
                     )
                 }
                 failure?.let { throw it }
@@ -446,8 +445,10 @@ class HarnessClient(
         eventRecord: JsonObject,
         sessionId: String,
         cursor: Long? = null,
+        message: JsonObject? = null,
     ) {
         val payload = eventRecord["payload"] as? JsonObject ?: eventRecord
+        val messagePayload = message ?: payload
         val eventSessionId =
             eventRecord.sessionId()?.takeIf(String::isNotBlank)
                 ?: sessionId.takeIf(String::isNotBlank)
@@ -484,13 +485,13 @@ class HarnessClient(
                 emit(
                     "tool.complete",
                     values(
-                        "name" to (payload["tool"] ?: JsonPrimitive("tool")),
-                        "tool_call_id" to (payload["run_id"] ?: JsonPrimitive("tool")),
-                        "result" to (payload["content"] ?: JsonPrimitive("")),
+                        "name" to (messagePayload["tool"] ?: JsonPrimitive("tool")),
+                        "tool_call_id" to (messagePayload["run_id"] ?: JsonPrimitive("tool")),
+                        "result" to (messagePayload["content"] ?: JsonPrimitive("")),
                     ),
                 )
             "chat.message.assistant.created" -> {
-                val content = payload["content"]
+                val content = messagePayload["content"]
                 if (content.hasFunctionCall()) {
                     if (content.reasoningContent() != null)
                         emit(
@@ -535,8 +536,9 @@ class HarnessClient(
                 emit(
                     "message.user",
                     values(
-                        "text" to (payload["content"] ?: JsonPrimitive("")),
-                        "message_id" to (eventRecord["id"] ?: JsonPrimitive("user")),
+                        "text" to (messagePayload["content"] ?: JsonPrimitive("")),
+                        "message_id" to
+                            (messagePayload["id"] ?: eventRecord["id"] ?: JsonPrimitive("user")),
                     ),
                 )
             "llm.run.failed" -> {
