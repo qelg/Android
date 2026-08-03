@@ -17,17 +17,12 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 
 @JvmInline value class ErrorMessage(val text: String)
-
-private const val OVERVIEW_POLL_INTERVAL_MS = 5_000L
-private const val OVERVIEW_REFRESH_AFTER_MS = 30_000L
 
 data class VoiceMessageTarget(
     val storedSessionId: String,
@@ -350,9 +345,7 @@ private constructor(
     private var usageJob: Job? = null
     private var chatGptUsageJob: Job? = null
     private var containersJob: Job? = null
-    private var overviewPollJob: Job? = null
     private var overviewCursor = 0L
-    private var lastOverviewSyncAtMs = 0L
     private var appStarted = false
     private var connectionVersion = 0L
     private var selectionVersion = 0L
@@ -407,13 +400,11 @@ private constructor(
         usageJob?.cancel()
         chatGptUsageJob?.cancel()
         containersJob?.cancel()
-        overviewPollJob?.cancel()
-        overviewPollJob = null
+        client?.stopWatching()
         dispatchClose(client)
         runtimeId = null
         usageStoredId = null
         overviewCursor = 0L
-        lastOverviewSyncAtMs = 0L
         runtimeToStored.clear()
         sessionModelOverrides.clear()
         val version = ++connectionVersion
@@ -454,7 +445,10 @@ private constructor(
         eventJob =
             viewModelScope.launch {
                 next.events.collect {
-                    if (client === next && connectionVersion == version) handleEvent(it)
+                    if (client === next && connectionVersion == version) {
+                        it.cursor?.let { cursor -> overviewCursor = maxOf(overviewCursor, cursor) }
+                        handleEvent(it)
+                    }
                 }
             }
         connectionJob =
@@ -471,7 +465,7 @@ private constructor(
                             refreshChatGptUsage()
                             restoreSelection()
                             recoverCompletedVoiceJob()
-                            if (appStarted) startOverviewPolling(next, version)
+                            if (appStarted) next.watchEvents(overviewCursor)
                         }
                     }
                     .onFailure {
@@ -493,8 +487,6 @@ private constructor(
         usageJob?.cancel()
         chatGptUsageJob?.cancel()
         containersJob?.cancel()
-        overviewPollJob?.cancel()
-        overviewPollJob = null
         connectionVersion++
         selectionVersion++
         dispatchClose(client)
@@ -651,7 +643,6 @@ private constructor(
                 newestSessionStates(sessionStates, currentSessionStates),
             )
         overviewCursor = maxOf(overviewCursor, snapshot.cursor ?: overviewCursorFor(sessions))
-        lastOverviewSyncAtMs = System.currentTimeMillis()
         _state.update {
             val selectedSession = sessions.firstOrNull { session -> session.id == it.selectedId }
             val selectedModel =
@@ -673,39 +664,6 @@ private constructor(
         }
     }
 
-    private suspend fun pollSessionOverview(api: HarnessClient, version: Long) {
-        do {
-            val response = api.sessionOverviewUpdates(overviewCursor)
-            if (client !== api || connectionVersion != version) return
-            overviewCursor = maxOf(overviewCursor, response.nextSinceId)
-            if (response.updates.isNotEmpty()) {
-                val incoming =
-                    applySessionModelOverrides(
-                        response.updates.map(SessionOverviewUpdate::session),
-                        sessionModelOverrides,
-                    )
-                _state.update { current ->
-                    val sessions =
-                        mergeSessionsById(current.sessions, incoming).map { session ->
-                            session.sessionState?.let { state ->
-                                session.copy(
-                                    active = state.running,
-                                    updatedAt = state.updatedAt ?: session.updatedAt,
-                                    endReason = state.outcome ?: session.endReason,
-                                )
-                            } ?: session
-                        }
-                    current.copy(
-                        sessions = sessions,
-                        unreadCounts = remapUnread(current.unreadCounts, sessions),
-                        activeSessionIds =
-                            sessions.filter(HarnessSession::active).mapTo(mutableSetOf()) { it.id },
-                    )
-                }
-            }
-        } while (response.hasMore)
-    }
-
     private fun overviewCursorFor(sessions: List<HarnessSession>): Long =
         sessions.maxOfOrNull { session ->
             maxOf(session.eventId ?: 0L, session.sessionState?.eventId ?: 0L)
@@ -713,37 +671,12 @@ private constructor(
 
     fun onAppStarted() {
         appStarted = true
-        client
-            ?.takeIf { !state.value.connecting }
-            ?.let { startOverviewPolling(it, connectionVersion) }
+        client?.takeIf { !state.value.connecting }?.watchEvents(overviewCursor)
     }
 
     fun onAppStopped() {
         appStarted = false
-        overviewPollJob?.cancel()
-        overviewPollJob = null
-    }
-
-    private fun startOverviewPolling(api: HarnessClient, version: Long) {
-        overviewPollJob?.cancel()
-        overviewPollJob =
-            viewModelScope.launch {
-                if (
-                    System.currentTimeMillis() - lastOverviewSyncAtMs >= OVERVIEW_REFRESH_AFTER_MS
-                ) {
-                    runCatching { refreshSessions(api, version) }
-                        .onFailure { if (client === api) showError(it) }
-                }
-                while (
-                    currentCoroutineContext().isActive &&
-                        client === api &&
-                        connectionVersion == version
-                ) {
-                    delay(OVERVIEW_POLL_INTERVAL_MS)
-                    runCatching { pollSessionOverview(api, version) }
-                        .onFailure { if (client === api) showError(it) }
-                }
-            }
+        client?.stopWatching()
     }
 
     private suspend fun refreshModels(api: HarnessClient, session: HarnessSession?, version: Long) {
@@ -965,7 +898,6 @@ private constructor(
                             sessions = listOf(session) + it.sessions,
                         )
                     }
-                    api.watchSession(stored)
                 }
                 .onFailure { error ->
                     _state.update { it.copy(connecting = false) }
@@ -1065,7 +997,6 @@ private constructor(
                                 )
                                 .reconcileQueuedMessages(session.id, items)
                         }
-                        api.watchSession(session.id, historyRows.latestEventId())
                         runCatching { refreshModels(api, session, connectionVersion) }
                             .onFailure(::showError)
                         refreshTokenUsage()
@@ -1776,6 +1707,82 @@ private constructor(
     }
 
     private fun handleEvent(event: GatewayEvent) {
+        if (event.type == "connection.restored") {
+            val api = client ?: return
+            val version = connectionVersion
+            viewModelScope.launch { runCatching { refreshSessions(api, version) } }
+            return
+        }
+        if (event.type == "connection.lost") return
+
+        // Keep the event-detail list live when it is already open. Unknown event
+        // types are retained as raw events by the transport as well.
+        val raw = event.rawEvent
+        val rawSession = event.sessionId
+        if (raw != null && rawSession != null && state.value.sessionEventsFor == rawSession) {
+            val parsed = SessionEvent.fromJson(raw)
+            _state.update { current ->
+                val events = (current.sessionEvents + parsed).distinctBy { it.id ?: -1L }
+                current.copy(sessionEvents = events.sortedBy { it.id ?: Long.MIN_VALUE })
+            }
+        }
+
+        if (event.type == "session.created") {
+            val sessionId = event.sessionId ?: return
+            val rawPayload = raw?.get("payload") as? JsonObject
+            val rawTags = raw?.get("tags") as? JsonObject
+            val session =
+                HarnessSession(
+                    id = sessionId,
+                    title = rawPayload?.string("title") ?: "Untitled session",
+                    updatedAt =
+                        raw?.get("created_at_ms")?.jsonPrimitive?.longOrNull?.let {
+                            Instant.ofEpochMilli(it).toString()
+                        },
+                    parentSessionId = rawTags?.string("parent_session"),
+                    tags =
+                        (rawPayload?.get("tags") as? JsonArray)
+                            ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+                            ?.toSet()
+                            .orEmpty(),
+                    eventId = raw?.get("id")?.jsonPrimitive?.longOrNull,
+                )
+            _state.update { current ->
+                val sessions = mergeSessionsById(current.sessions, listOf(session))
+                val parent = session.parentSessionId
+                current.copy(
+                    sessions = sessions,
+                    childSessions =
+                        parent?.let { id ->
+                            current.childSessions +
+                                (id to
+                                    mergeSessionsById(
+                                        current.childSessions[id].orEmpty(),
+                                        listOf(session),
+                                    ))
+                        } ?: current.childSessions,
+                )
+            }
+            return
+        }
+        if (event.type == "session.renamed") {
+            val sessionId = event.sessionId ?: return
+            val title = (raw?.get("payload") as? JsonObject)?.string("title") ?: return
+            _state.update { current ->
+                current.copy(
+                    sessions =
+                        current.sessions.map {
+                            if (it.id == sessionId) it.copy(title = title) else it
+                        },
+                    childSessions =
+                        current.childSessions.mapValues { (_, children) ->
+                            children.map { if (it.id == sessionId) it.copy(title = title) else it }
+                        },
+                )
+            }
+            return
+        }
+
         if (event.type == "session.state") {
             val stored = storedSessionId(event) ?: return
             val sessionState =
