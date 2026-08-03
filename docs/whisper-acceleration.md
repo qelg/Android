@@ -1,28 +1,32 @@
 # Whisper acceleration on Android
 
-The app uses the CPU backend from whisper.cpp v1.7.6. GPU use is explicitly disabled in
+The app uses the CPU backend from whisper.cpp v1.9.1. GPU use is explicitly disabled in
 `whisper_jni.cpp`.
 
 ## Optimized ARM64 CPU backend
 
-ARM64 builds package four separately compiled ggml CPU modules:
+ARM64 builds package seven separately compiled ggml CPU modules:
 
 - Armv8.0 baseline;
 - Armv8.2 with dot-product instructions;
 - Armv8.2 with dot product and FP16 vector arithmetic;
-- Armv8.6 with dot product, FP16 vector arithmetic, and i8mm.
+- Armv8.6 with dot product, FP16 vector arithmetic, and i8mm;
+- Armv9.0 with dot product, i8mm, and SVE2;
+- Armv9.2 with dot product, i8mm, FP16 vector arithmetic, SVE, and SME;
+- Armv9.2 with the additional SVE2 instructions.
 
 Before loading a model, ggml reads Android's `AT_HWCAP` and `AT_HWCAP2` feature flags and loads the
-fastest compatible module. This should select the Armv8.6 module on a Pixel 9 Pro while retaining the
-Armv8.0 fallback for older phones. The modules are extracted at installation so ggml can enumerate
+fastest compatible module. On a Pixel 9 Pro this now selects the highest Armv9 or Armv8 module
+reported by the device, while retaining the Armv8.0 fallback for older phones. The modules are extracted at installation so ggml can enumerate
 and load them from the app's native-library directory. Other Android ABIs retain the baseline static
 backend.
 
 The Whisper settings dialog also permits Automatic or 1–8 worker threads. Automatic uses up to four threads, matching the four performance-oriented cores on Tensor G4 while
 leaving its efficiency cores available to Android. The fastest value
 can vary by model, recording length, device temperature, and Android scheduling. The native system
-information, including selected CPU features, is written to Logcat under `LocalWhisper` when the
-first model context is created.
+information, including selected CPU features and the exact selected CPU backend variant, is written to
+Logcat under `LocalWhisper` when the first model context is created. The native loader also emits a
+separate `Selected CPU backend variant: ...` line.
 
 KleidiAI remains disabled: the vendored release would fetch a non-vendored dependency, and its
 principal optimized path does not match the app's Q5 model catalog. OpenMP, fast-math, hard CPU

@@ -1,4 +1,5 @@
 #include <jni.h>
+#include <android/log.h>
 #include <cstdint>
 #include <mutex>
 #include <stdexcept>
@@ -15,6 +16,7 @@ void throw_runtime(JNIEnv * env, const char * message) {
 #ifdef HARNESS_GGML_RUNTIME_DISPATCH
 std::once_flag cpu_backend_once;
 bool cpu_backend_loaded = false;
+std::string cpu_backend_variant;
 #endif
 
 bool prepare_cpu_backend(JNIEnv * env, jstring native_library_dir) {
@@ -34,6 +36,9 @@ bool prepare_cpu_backend(JNIEnv * env, jstring native_library_dir) {
             // HWCAP scorer and returns null when its instructions are unsupported. Continuing also
             // provides a lower-ISA fallback if a compatible higher module fails to load.
             static const char * variants[] = {
+                "android_armv9.2_2",
+                "android_armv9.2_1",
+                "android_armv9.0_1",
                 "android_armv8.6_1",
                 "android_armv8.2_2",
                 "android_armv8.2_1",
@@ -43,13 +48,19 @@ bool prepare_cpu_backend(JNIEnv * env, jstring native_library_dir) {
                 const std::string path =
                     directory + "/libggml-cpu-" + variant + ".so";
                 try {
-                    ggml_backend_load(path.c_str());
+                    // ggml_backend_load() runs the module's HWCAP score before registering
+                    // it, so a non-null registry is the selected, compatible variant.
+                    ggml_backend_reg_t registry = ggml_backend_load(path.c_str());
+                    if (registry != nullptr) {
+                        cpu_backend_variant = variant;
+                        cpu_backend_loaded = true;
+                        __android_log_print(
+                            ANDROID_LOG_INFO, "LocalWhisper",
+                            "Selected CPU backend variant: %s", variant);
+                        return;
+                    }
                 } catch (const std::exception &) {
                     continue;
-                }
-                if (ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU) != nullptr) {
-                    cpu_backend_loaded = true;
-                    return;
                 }
             }
             // Throwing keeps once_flag retryable instead of permanently caching a transient error.
@@ -198,7 +209,16 @@ Java_dev_qelg_harnessandroid_voice_WhisperNative_createContext(
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_dev_qelg_harnessandroid_voice_WhisperNative_systemInfo(JNIEnv * env, jobject) {
-    return utf8_to_java(env, whisper_print_system_info());
+    std::string info = whisper_print_system_info();
+#ifdef HARNESS_GGML_RUNTIME_DISPATCH
+    if (!cpu_backend_variant.empty()) {
+        info += "\nSelected CPU backend variant: ";
+        info += cpu_backend_variant;
+    }
+#else
+    info += "\nSelected CPU backend variant: static baseline";
+#endif
+    return utf8_to_java(env, info);
 }
 
 extern "C" JNIEXPORT void JNICALL

@@ -31,7 +31,10 @@ foreach(cpu_target
         ggml-cpu-android_armv8.0_1
         ggml-cpu-android_armv8.2_1
         ggml-cpu-android_armv8.2_2
-        ggml-cpu-android_armv8.6_1)
+        ggml-cpu-android_armv8.6_1
+        ggml-cpu-android_armv9.0_1
+        ggml-cpu-android_armv9.2_1
+        ggml-cpu-android_armv9.2_2)
     if(TARGET ${cpu_target})
         target_compile_options(${cpu_target} PRIVATE -O3)
     endif()
@@ -44,7 +47,7 @@ add_library(
     vendor/whisper.cpp/src/whisper.cpp
 )
 
-target_compile_definitions(harness-whisper PRIVATE GGML_USE_CPU)
+target_compile_definitions(harness-whisper PRIVATE GGML_USE_CPU WHISPER_VERSION=\"1.9.1\")
 if(ANDROID_ABI STREQUAL "arm64-v8a")
     target_compile_definitions(harness-whisper PRIVATE HARNESS_GGML_RUNTIME_DISPATCH)
 endif()
