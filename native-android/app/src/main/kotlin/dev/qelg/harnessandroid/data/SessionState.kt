@@ -14,6 +14,7 @@ data class HarnessSessionState(
     val sourceEventId: Long? = null,
     val eventId: Long? = null,
     val createdAtMs: Long? = null,
+    val tasks: List<HarnessTask> = emptyList(),
 ) {
     val live: Boolean
         get() = state == "running"
@@ -48,6 +49,11 @@ data class HarnessSessionState(
                 sourceEventId = value["source_event_id"]?.jsonPrimitive?.longOrNull,
                 eventId = value["event_id"]?.jsonPrimitive?.longOrNull,
                 createdAtMs = value["created_at_ms"]?.jsonPrimitive?.longOrNull,
+                tasks =
+                    (value["tasks"] as? kotlinx.serialization.json.JsonArray)
+                        ?.mapNotNull { it as? JsonObject }
+                        ?.mapNotNull(HarnessTask::fromJson)
+                        .orEmpty(),
             )
     }
 }

@@ -2,19 +2,58 @@ package dev.qelg.harnessandroid
 
 import dev.qelg.harnessandroid.data.HarnessSession
 import dev.qelg.harnessandroid.data.HarnessSessionState
+import dev.qelg.harnessandroid.data.HarnessTask
 import dev.qelg.harnessandroid.data.applySessionStates
 import dev.qelg.harnessandroid.data.filterArchivedSessions
 import dev.qelg.harnessandroid.data.formatSessionState
 import dev.qelg.harnessandroid.data.isSessionRead
 import java.time.Instant
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SessionStateTest {
+    @Test
+    fun decodesTasksFromSessionState() {
+        val state =
+            HarnessSessionState.fromJson(
+                buildJsonObject {
+                    put("session_id", "session")
+                    put("state", "running")
+                    put(
+                        "tasks",
+                        JsonArray(
+                            listOf(
+                                buildJsonObject {
+                                    put("id", 0)
+                                    put("name", "done")
+                                    put("state", "finished")
+                                },
+                                buildJsonObject {
+                                    put("id", 1)
+                                    put("name", "working")
+                                    put("state", "in_progress")
+                                },
+                            )
+                        ),
+                    )
+                }
+            )
+
+        assertEquals(listOf("done", "working"), state.tasks.map { it.name })
+        assertEquals(1, state.tasks.count(HarnessTask::isFinished))
+        assertEquals(
+            listOf("working"),
+            state.tasks.filter(HarnessTask::isInProgress).map { it.name },
+        )
+    }
+
     @Test
     fun decodesHarnessSessionStateContract() {
         val state =
