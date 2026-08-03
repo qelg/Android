@@ -3,6 +3,8 @@ package dev.qelg.harnessandroid
 import dev.qelg.harnessandroid.data.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.mockwebserver.*
@@ -225,7 +227,7 @@ class HarnessClientTest {
             |
             |id: 5
             |event: session.state
-            |data: {"event":{"id":5,"name":"session.state","tags":{"session":"sess_1","state":"finished","read":"unread"},"payload":{"source_event_id":4,"outcome":"stop"},"created_at_ms":1752757202123}}
+            |data: {"event":{"id":5,"name":"session.state","tags":{"session":"sess_1","state":"finished","read":"unread"},"payload":{"source_event_id":4,"outcome":"stop","tasks":[{"id":1,"name":"working","state":"in_progress"}],"total":1,"finished":0,"in_progress":1},"created_at_ms":1752757202123}}
             |
             |"""
                 .trimMargin()
@@ -242,6 +244,9 @@ class HarnessClientTest {
             assertEquals("finished", events[2].payload["state"]?.jsonPrimitive?.content)
             assertEquals("unread", events[2].payload["read"]?.jsonPrimitive?.content)
             assertEquals("stop", events[2].payload["outcome"]?.jsonPrimitive?.content)
+            assertEquals(1, events[2].payload["tasks"]?.jsonArray?.size)
+            assertEquals(1, events[2].payload["total"]?.jsonPrimitive?.intOrNull)
+            assertEquals(1, events[2].payload["in_progress"]?.jsonPrimitive?.intOrNull)
             assertEquals(5L, events[2].payload["event_id"]?.jsonPrimitive?.content?.toLong())
             assertEquals("/sessions/sess_1/messages/updates?since_id=2", server.takeRequest().path)
         }

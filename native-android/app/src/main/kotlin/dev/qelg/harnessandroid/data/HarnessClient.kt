@@ -373,9 +373,15 @@ class HarnessClient(
                     listOf("state", "read", "archive").forEach { key ->
                         tags[key]?.let { put(key, it) }
                     }
-                    listOf("source_event_id", "outcome").forEach { key ->
-                        payload[key]?.let { put(key, it) }
-                    }
+                    listOf(
+                            "source_event_id",
+                            "outcome",
+                            "tasks",
+                            "total",
+                            "finished",
+                            "in_progress",
+                        )
+                        .forEach { key -> payload[key]?.let { put(key, it) } }
                     eventRecord["id"]?.let { put("event_id", it) }
                     timestamp?.let { put("created_at_ms", it) }
                 }

@@ -391,6 +391,43 @@ internal fun SessionArchiveSwipeBox(
 }
 
 @Composable
+internal fun SessionStateOverview(state: HarnessSessionState) {
+    val inProgress = state.tasks.filter(HarnessTask::isInProgress)
+    if (!state.running || inProgress.isEmpty()) {
+        Text(
+            formatSessionState(state),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.tertiary,
+        )
+        return
+    }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+        Text(
+            formatSessionState(state),
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.tertiary,
+        )
+        Spacer(Modifier.width(8.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                "${state.tasks.count(HarnessTask::isFinished)}/${state.tasks.size} done",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            inProgress.forEach { task ->
+                Text(
+                    task.name,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun SessionPane(
     state: ChatUiState,
     vm: ChatViewModel,
@@ -510,13 +547,7 @@ private fun SessionPane(
                                             color = MaterialTheme.colorScheme.tertiary,
                                         )
                                     }
-                                session.sessionState?.let {
-                                    Text(
-                                        formatSessionState(it),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.tertiary,
-                                    )
-                                }
+                                session.sessionState?.let { SessionStateOverview(it) }
                                 updated?.let {
                                     Text(
                                         "Latest $it",
@@ -660,13 +691,7 @@ private fun TreePane(
                                         color = MaterialTheme.colorScheme.tertiary,
                                     )
                                 }
-                                session.sessionState?.let {
-                                    Text(
-                                        formatSessionState(it),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.tertiary,
-                                    )
-                                }
+                                session.sessionState?.let { SessionStateOverview(it) }
                                 updated?.let {
                                     Text(
                                         "Latest $it",

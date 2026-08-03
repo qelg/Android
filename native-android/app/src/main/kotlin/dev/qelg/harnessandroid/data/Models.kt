@@ -515,6 +515,20 @@ private fun toolCallCount(item: ChatItem): Int =
     }
 
 data class HarnessTask(val id: Int, val name: String, val state: String) {
+    companion object {
+        fun fromJson(value: JsonObject): HarnessTask? {
+            val id = value["id"]?.jsonPrimitive?.intOrNull ?: return null
+            val name =
+                value["name"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank)
+                    ?: return null
+            val state =
+                value["state"]?.jsonPrimitive?.contentOrNull?.takeIf {
+                    it in setOf("todo", "in_progress", "finished")
+                } ?: return null
+            return HarnessTask(id, name, state)
+        }
+    }
+
     val isFinished: Boolean
         get() = state == "finished"
 
@@ -560,16 +574,7 @@ private fun harnessTaskListFromResult(result: String): HarnessTaskList? {
     val taskElements = root["tasks"] as? JsonArray ?: return null
     val tasks =
         taskElements.map { element ->
-            val task = element as? JsonObject ?: return null
-            val id = task["id"]?.jsonPrimitive?.intOrNull ?: return null
-            val name =
-                task["name"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank)
-                    ?: return null
-            val state =
-                task["state"]?.jsonPrimitive?.contentOrNull?.takeIf {
-                    it in setOf("todo", "in_progress", "finished")
-                } ?: return null
-            HarnessTask(id, name, state)
+            HarnessTask.fromJson(element as? JsonObject ?: return null) ?: return null
         }
     return HarnessTaskList(tasks)
 }
