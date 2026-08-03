@@ -39,15 +39,15 @@ class SessionEventTest {
     }
 
     @Test
-    fun eventTimesIncludeSeconds() {
+    fun eventTimesIncludeSecondsAndMilliseconds() {
         val formatted =
             formatEventTime(
-                Instant.parse("2025-01-02T03:04:05Z"),
+                Instant.parse("2025-01-02T03:04:05.006Z"),
                 zoneId = ZoneId.of("UTC"),
                 locale = Locale.US,
             )
 
-        assertTrue(formatted.contains(":04:05"))
+        assertTrue(formatted.contains(":04:05.006"))
     }
 
     @Test

@@ -2149,14 +2149,50 @@ internal fun formatEventTime(
     timestamp: java.time.Instant,
     zoneId: java.time.ZoneId = java.time.ZoneId.systemDefault(),
     locale: java.util.Locale = java.util.Locale.getDefault(),
-): String =
-    java.time.format.DateTimeFormatter.ofLocalizedDateTime(
+): String {
+    val pattern =
+        java.time.format.DateTimeFormatterBuilder.getLocalizedDateTimePattern(
             java.time.format.FormatStyle.MEDIUM,
             java.time.format.FormatStyle.MEDIUM,
+            java.time.chrono.IsoChronology.INSTANCE,
+            locale,
         )
-        .withLocale(locale)
+    val patternWithMillis = patternWithMillis(pattern)
+    return java.time.format.DateTimeFormatter.ofPattern(patternWithMillis, locale)
         .withZone(zoneId)
         .format(timestamp)
+}
+
+private fun patternWithMillis(pattern: String): String {
+    val result = StringBuilder(pattern.length + 4)
+    var quoted = false
+    var inserted = false
+    var index = 0
+    while (index < pattern.length) {
+        val character = pattern[index]
+        if (character == '\'') {
+            result.append(character)
+            if (index + 1 < pattern.length && pattern[index + 1] == '\'') {
+                result.append('\'')
+                index += 2
+            } else {
+                quoted = !quoted
+                index++
+            }
+        } else if (!quoted && character == 's' && !inserted) {
+            do {
+                result.append(pattern[index])
+                index++
+            } while (index < pattern.length && pattern[index] == 's')
+            result.append(".SSS")
+            inserted = true
+        } else {
+            result.append(character)
+            index++
+        }
+    }
+    return if (inserted) result.toString() else "$result.SSS"
+}
 
 internal enum class ContextDetailPage {
     SystemPrompt,
