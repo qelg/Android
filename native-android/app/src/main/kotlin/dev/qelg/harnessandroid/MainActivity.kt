@@ -2152,7 +2152,7 @@ internal fun formatEventTime(
 ): String =
     java.time.format.DateTimeFormatter.ofLocalizedDateTime(
             java.time.format.FormatStyle.MEDIUM,
-            java.time.format.FormatStyle.SHORT,
+            java.time.format.FormatStyle.MEDIUM,
         )
         .withLocale(locale)
         .withZone(zoneId)

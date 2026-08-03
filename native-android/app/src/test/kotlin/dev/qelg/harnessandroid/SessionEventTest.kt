@@ -2,6 +2,8 @@ package dev.qelg.harnessandroid
 
 import dev.qelg.harnessandroid.data.SessionEvent
 import java.time.Instant
+import java.time.ZoneId
+import java.util.Locale
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
@@ -34,6 +36,18 @@ class SessionEventTest {
         assertEquals(17L, event.causationId)
         assertEquals(raw, event.raw)
         assertTrue(event.prettyJson.contains("\"unknown\": true"))
+    }
+
+    @Test
+    fun eventTimesIncludeSeconds() {
+        val formatted =
+            formatEventTime(
+                Instant.parse("2025-01-02T03:04:05Z"),
+                zoneId = ZoneId.of("UTC"),
+                locale = Locale.US,
+            )
+
+        assertTrue(formatted.contains(":04:05"))
     }
 
     @Test
