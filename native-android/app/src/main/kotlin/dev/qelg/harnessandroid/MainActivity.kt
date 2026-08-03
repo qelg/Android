@@ -758,6 +758,7 @@ private fun ChatPane(
     val selectedSession = state.sessions.firstOrNull { it.id == state.selectedId }
     val blocks =
         remember(state.items) { groupTimeline(attachReasoningToToolOperations(state.items)) }
+    val taskList = remember(state.items) { latestHarnessTaskList(state.items) }
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val unread = state.selectedId?.let { state.unreadCounts[it] } ?: 0
@@ -950,7 +951,7 @@ private fun ChatPane(
             state.tokenUsage?.let { usage ->
                 ContextUsageBar(usage, onClick = { showUsageDetails = true })
             }
-            if (state.transcribing) {
+            if (state.voiceRecording || state.transcribing) {
                 Column(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -960,9 +961,13 @@ private fun ChatPane(
                             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            if (state.voiceTargetSessionId == state.selectedId)
-                                state.transcriptionStatus ?: "Transcribing locally with Whisper…"
-                            else "Transcribing voice for another chat…",
+                            when {
+                                state.voiceRecording -> "Recording voice…"
+                                state.voiceTargetSessionId == state.selectedId ->
+                                    state.transcriptionStatus
+                                        ?: "Transcribing locally with Whisper…"
+                                else -> "Transcribing voice for another chat…"
+                            },
                             Modifier.weight(1f),
                         )
                         state.transcriptionProgress?.let { progress ->
@@ -1066,6 +1071,14 @@ private fun ChatPane(
             if (state.selectedQueuedMessages.isNotEmpty()) {
                 QueuedMessagesPanel(state.selectedQueuedMessages)
             }
+            taskList
+                ?.takeIf { it.inProgress.isNotEmpty() }
+                ?.let { currentTasks ->
+                    TaskProgressPanel(
+                        taskList = currentTasks,
+                        onOpen = { fullScreenDetail = FullScreenDetail.Tasks },
+                    )
+                }
             if (pendingSecret != null) {
                 Column(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
@@ -1150,6 +1163,10 @@ private fun ChatPane(
                     message = detail.message,
                     onDismiss = { fullScreenDetail = null },
                 )
+            FullScreenDetail.Tasks ->
+                taskList?.let { currentTasks ->
+                    TaskListScreen(taskList = currentTasks, onDismiss = { fullScreenDetail = null })
+                }
             null -> Unit
         }
         when (val detail = sessionDetail) {
@@ -2123,6 +2140,8 @@ private sealed interface FullScreenDetail {
     data class ToolCall(val tool: ChatItem.Tool) : FullScreenDetail
 
     data class SystemPrompt(val message: ChatItem.Message) : FullScreenDetail
+
+    data object Tasks : FullScreenDetail
 }
 
 @Composable
@@ -2894,6 +2913,106 @@ private fun CompactToolValuePreview(preview: ToolValuePreview) {
         }
     }
 }
+
+@Composable
+internal fun TaskProgressPanel(taskList: HarnessTaskList, onOpen: () -> Unit) {
+    Surface(
+        modifier =
+            Modifier.fillMaxWidth()
+                .clickable(onClick = onOpen, onClickLabel = "Show tasks", role = Role.Button),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+    ) {
+        Column(
+            Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                "${taskList.finishedCount}/${taskList.totalCount} done",
+                style = MaterialTheme.typography.titleSmall,
+            )
+            taskList.inProgress.forEach { task ->
+                Text(
+                    task.name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+internal fun TaskListScreen(taskList: HarnessTaskList, onDismiss: () -> Unit) {
+    BackHandler(onBack = onDismiss)
+    val orderedTasks =
+        remember(taskList) {
+            listOf("finished", "in_progress", "todo").flatMap { state ->
+                taskList.tasks.filter { it.state == state }
+            }
+        }
+    FullScreenDetailContainer {
+        Column(Modifier.fillMaxSize()) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onDismiss) {
+                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                }
+                Column(Modifier.weight(1f)) {
+                    Text("Tasks", style = MaterialTheme.typography.titleLarge)
+                    Text(
+                        "${taskList.finishedCount}/${taskList.totalCount} done",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            HorizontalDivider()
+            if (orderedTasks.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No tasks")
+                }
+            } else {
+                LazyColumn(
+                    Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(vertical = 8.dp),
+                ) {
+                    items(orderedTasks, key = { it.id }) { task ->
+                        ListItem(
+                            headlineContent = { Text(task.name) },
+                            supportingContent = { Text(taskStateLabel(task.state)) },
+                            leadingContent = {
+                                Icon(
+                                    when (task.state) {
+                                        "finished" -> Icons.Default.CheckCircle
+                                        "in_progress" -> Icons.Default.Pending
+                                        else -> Icons.Default.RadioButtonUnchecked
+                                    },
+                                    contentDescription = null,
+                                    tint =
+                                        if (task.state == "finished")
+                                            MaterialTheme.colorScheme.primary
+                                        else LocalContentColor.current,
+                                )
+                            },
+                        )
+                        HorizontalDivider()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun taskStateLabel(state: String): String =
+    when (state) {
+        "finished" -> "Done"
+        "in_progress" -> "In progress"
+        else -> "To do"
+    }
 
 @Composable
 internal fun ToolCallScreen(tool: ChatItem.Tool, onDismiss: () -> Unit) {

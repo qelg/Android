@@ -23,6 +23,7 @@ import dev.qelg.harnessandroid.data.formatSessionUpdate
 import dev.qelg.harnessandroid.data.groupTimeline
 import dev.qelg.harnessandroid.data.isSafeExternalUrl
 import dev.qelg.harnessandroid.data.isSessionUpdateRead
+import dev.qelg.harnessandroid.data.latestHarnessTaskList
 import dev.qelg.harnessandroid.data.modelCatalogForSession
 import dev.qelg.harnessandroid.data.modelSelectionFromSessionInfo
 import dev.qelg.harnessandroid.data.modelSwitchValue
@@ -52,6 +53,48 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ModelsTest {
+    @Test
+    fun latestTasksToolResponseProvidesTheCompleteCurrentList() {
+        val items =
+            listOf(
+                ChatItem.Tool(
+                    id = "old",
+                    name = "tasks",
+                    state = "completed",
+                    result = """{"tasks":[{"id":0,"name":"old","state":"todo"}]}""",
+                ),
+                ChatItem.Tool(
+                    id = "latest",
+                    name = "tasks",
+                    state = "completed",
+                    result =
+                        """{"tasks":[{"id":0,"name":"done","state":"finished"},{"id":1,"name":"working","state":"in_progress"},{"id":2,"name":"later","state":"todo"}],"total":3,"finished":1,"in_progress":1}""",
+                ),
+            )
+
+        val tasks = latestHarnessTaskList(items)!!
+
+        assertEquals(3, tasks.totalCount)
+        assertEquals(1, tasks.finishedCount)
+        assertEquals(listOf("working"), tasks.inProgress.map { it.name })
+        assertEquals(listOf("done", "working", "later"), tasks.tasks.map { it.name })
+    }
+
+    @Test
+    fun malformedTasksResponseIsNotUsedAsTaskState() {
+        val items =
+            listOf(
+                ChatItem.Tool(
+                    id = "tasks",
+                    name = "tasks",
+                    state = "completed",
+                    result = "{\"tasks\":[{\"id\":0,\"name\":\"broken\",\"state\":\"unknown\"}]}",
+                )
+            )
+
+        assertEquals(null, latestHarnessTaskList(items))
+    }
+
     @Test
     fun decodesAndGroupsContainersBySessionSize() {
         val first =

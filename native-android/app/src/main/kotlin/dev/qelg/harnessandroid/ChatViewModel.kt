@@ -1,10 +1,16 @@
 package dev.qelg.harnessandroid
 
 import android.app.Application
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.*
 import dev.qelg.harnessandroid.data.*
 import dev.qelg.harnessandroid.voice.*
 import java.io.Closeable
+import java.io.File
 import java.time.Instant
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.CancellationException
@@ -31,13 +37,18 @@ data class VoiceMessageTarget(
 )
 
 private data class ActiveVoiceTranscription(
-    val id: Long,
-    val transcriber: IncrementalVoiceTranscriber,
-    val recorder: LocalAudioRecorder,
+    val id: String,
+    val recorder: LocalAudioRecorder?,
+    val target: VoiceMessageTarget,
 )
 
 internal fun formatVoiceDuration(samples: Long): String {
     val seconds = samples.coerceAtLeast(0) / LocalAudioRecorder.SAMPLE_RATE
+    return "%d:%02d".format(seconds / 60, seconds % 60)
+}
+
+internal fun formatElapsedDuration(milliseconds: Long): String {
+    val seconds = milliseconds.coerceAtLeast(0) / 1_000
     return "%d:%02d".format(seconds / 60, seconds % 60)
 }
 
@@ -139,6 +150,7 @@ data class ChatUiState(
     val transcriptionStatus: String? = null,
     val transcriptionProgress: Float? = null,
     val transcriptionProgressLabel: String? = null,
+    val transcriptionElapsedMs: Long? = null,
     val transcriptionText: String? = null,
     val voiceTargetSessionId: String? = null,
     val whisperModel: WhisperModel = WhisperModel.Base,
@@ -308,10 +320,12 @@ private constructor(
         false,
     )
 
+    private val app = application
     private val credentials = SecureCredentials(application)
     private val draftStore = DraftStore(application)
     private val readStateStore = ReadStateStore(application)
     private val localWhisper = LocalWhisper(application)
+    private val voiceJobStore = VoiceJobStore(application)
     private val whisperModelStore = WhisperModelStore(application)
     private val _state =
         MutableStateFlow(
@@ -349,8 +363,21 @@ private constructor(
     private var voiceTranscription: ActiveVoiceTranscription? = null
     private val runtimeToStored = mutableMapOf<String, String>()
     private val sessionModelOverrides = mutableMapOf<String, String>()
+    private val voiceJobReceiver =
+        object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                handleVoiceJobUpdate(intent)
+            }
+        }
 
     init {
+        ContextCompat.registerReceiver(
+            application,
+            voiceJobReceiver,
+            IntentFilter(VoiceTranscriptionService.ACTION_UPDATE),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        restoreVoiceJob()
         if (restoreConnection) {
             credentials.load()?.let(::connect)
             syncUpdateState()
@@ -369,7 +396,6 @@ private constructor(
             }
             return
         }
-        cancelVoiceOperation(null)
         credentials.save(config)
         draftNamespace = config.normalizedBaseUrl
         val drafts = draftStore.load(draftNamespace)
@@ -444,6 +470,7 @@ private constructor(
                             _state.update { it.copy(connecting = false) }
                             refreshChatGptUsage()
                             restoreSelection()
+                            recoverCompletedVoiceJob()
                             if (appStarted) startOverviewPolling(next, version)
                         }
                     }
@@ -459,7 +486,6 @@ private constructor(
     }
 
     fun disconnect() {
-        cancelVoiceOperation(null)
         connectionJob?.cancel()
         eventJob?.cancel()
         selectionJob?.cancel()
@@ -1295,14 +1321,15 @@ private constructor(
 
     fun startVoiceRecording(target: VoiceMessageTarget) {
         check(voiceTranscription == null) { "A voice recording is already active" }
-        val id = ++voiceTranscriptionSequence
+        check(voiceJobStore.load() == null) { "A voice transcription is already active" }
+        val id = (++voiceTranscriptionSequence).toString()
         val model = state.value.whisperModel
         val threadCount = state.value.whisperThreadCount
-        lateinit var transcriber: IncrementalVoiceTranscriber
+        val audioFile = File(app.filesDir, "voice/$id.pcm")
         val recorder =
             LocalAudioRecorder(
-                onChunk = { pcm16 -> transcriber.addChunk(pcm16) },
-                onSamplesRecorded = { samples -> transcriber.noteRecordedSamples(samples) },
+                audioFile = audioFile,
+                onSamplesRecorded = { samples -> updateVoiceRecording(id, samples) },
                 onMaximumDuration = {
                     viewModelScope.launch {
                         updateVoiceStatus(
@@ -1313,49 +1340,28 @@ private constructor(
                     }
                 },
             )
-        transcriber =
-            IncrementalVoiceTranscriber(
-                scope = viewModelScope,
-                transcribe = { samples, initialPrompt, onProgress, onPartial, shouldAbort ->
-                    localWhisper.transcribe(
-                        samples = samples,
-                        model = model,
-                        configuredThreadCount = threadCount,
-                        onStatus = { status ->
-                            viewModelScope.launch { updateVoiceStatus(id, status) }
-                        },
-                        initialPrompt = initialPrompt,
-                        onProgress = onProgress,
-                        onPartial = onPartial,
-                        allowEmpty = true,
-                        shouldAbort = shouldAbort,
-                    )
-                },
-                onStarted = {
-                    if (voiceTranscription?.id == id) {
-                        _state.update {
-                            it.copy(
-                                transcribing = true,
-                                transcriptionStatus = "Preparing Whisper ${model.displayName}…",
-                            )
-                        }
-                    }
-                },
-                onUpdate = { update -> updateVoiceProgress(id, update) },
-                onComplete = { text ->
-                    if (voiceTranscription?.id == id) sendVoiceMessage(target, text)
-                },
-                onFailure = { error -> handleVoiceTranscriptionFailure(id, error) },
-                onStopped = { clearVoiceTranscription(id) },
+        voiceJobStore.save(
+            VoiceJob(
+                id = id,
+                storedSessionId = target.storedSessionId,
+                runtimeSessionId = target.runtimeSessionId,
+                targetModel = target.model,
+                modelId = model.id,
+                threadCount = threadCount,
+                audioPath = audioFile.path,
+                totalSamples = 0,
+                phase = VoiceJobPhase.RECORDING,
             )
-        voiceTranscription = ActiveVoiceTranscription(id, transcriber, recorder)
+        )
+        voiceTranscription = ActiveVoiceTranscription(id, recorder, target)
         _state.update {
             it.copy(
                 voiceRecording = true,
                 transcribing = false,
                 transcriptionStatus = null,
                 transcriptionProgress = null,
-                transcriptionProgressLabel = null,
+                transcriptionProgressLabel = "0:00 recorded",
+                transcriptionElapsedMs = null,
                 transcriptionText = null,
                 voiceTargetSessionId = target.storedSessionId,
             )
@@ -1371,12 +1377,32 @@ private constructor(
     fun stopVoiceRecording() {
         val active = voiceTranscription ?: return
         if (!state.value.voiceRecording) return
-        _state.update { it.copy(voiceRecording = false) }
+        _state.update { it.copy(voiceRecording = false, transcribing = true) }
         viewModelScope.launch {
-            runCatching { active.recorder.stop() }
+            runCatching { active.recorder!!.stop() }
                 .onSuccess { tail ->
-                    if (voiceTranscription?.id == active.id)
-                        active.transcriber.finish(tail.pcm16, tail.totalSamples)
+                    if (voiceTranscription?.id != active.id) return@onSuccess
+                    val current = voiceJobStore.load()
+                    if (current == null) {
+                        showError(IllegalStateException("Voice transcription job disappeared"))
+                        return@onSuccess
+                    }
+                    val job =
+                        current.copy(
+                            phase = VoiceJobPhase.TRANSCRIBING,
+                            totalSamples = tail.totalSamples,
+                            audioPath = tail.audioFile.path,
+                        )
+                    voiceJobStore.save(job)
+                    _state.update {
+                        it.copy(
+                            transcriptionStatus = "Preparing local Whisper…",
+                            transcriptionProgress = 0f,
+                            transcriptionProgressLabel =
+                                "0:00 of ${formatVoiceDuration(tail.totalSamples)}",
+                        )
+                    }
+                    VoiceTranscriptionService.start(app, job)
                 }
                 .onFailure { error ->
                     cancelVoiceOperation(active.id)
@@ -1389,46 +1415,155 @@ private constructor(
         if (state.value.voiceRecording) cancelVoiceOperation(voiceTranscription?.id)
     }
 
-    private fun handleVoiceTranscriptionFailure(id: Long, error: Throwable) {
+    private fun updateVoiceRecording(id: String, samples: Long) {
+        if (voiceTranscription?.id != id) return
+        val job = voiceJobStore.load()?.takeIf { it.id == id } ?: return
+        voiceJobStore.save(job.copy(totalSamples = samples))
+        _state.update {
+            it.copy(
+                transcriptionProgress = null,
+                transcriptionProgressLabel = "${formatVoiceDuration(samples)} recorded",
+            )
+        }
+    }
+
+    private fun handleVoiceJobUpdate(intent: Intent) {
+        val id = intent.getStringExtra(VoiceTranscriptionService.EXTRA_JOB_ID) ?: return
+        if (voiceTranscription?.id != id) return
+        val phase =
+            intent.getStringExtra(VoiceTranscriptionService.EXTRA_PHASE)?.let {
+                runCatching { VoiceJobPhase.valueOf(it) }.getOrNull()
+            } ?: return
+        val completed = intent.getLongExtra(VoiceTranscriptionService.EXTRA_COMPLETED_SAMPLES, 0)
+        val total = intent.getLongExtra(VoiceTranscriptionService.EXTRA_TOTAL_SAMPLES, 0)
+        val elapsed =
+            intent.getLongExtra(VoiceTranscriptionService.EXTRA_ELAPSED_MS, -1).takeIf { it >= 0 }
+        val transcript = intent.getStringExtra(VoiceTranscriptionService.EXTRA_TRANSCRIPT)
+        val error = intent.getStringExtra(VoiceTranscriptionService.EXTRA_ERROR)
+        val job = voiceJobStore.load() ?: return
+        voiceJobStore.save(
+            job.copy(
+                phase = phase,
+                completedSamples = completed,
+                totalSamples = total,
+                elapsedMs = elapsed,
+                transcript = transcript,
+                error = error,
+            )
+        )
+        when (phase) {
+            VoiceJobPhase.TRANSCRIBING -> {
+                _state.update {
+                    it.copy(
+                        voiceRecording = false,
+                        transcribing = true,
+                        transcriptionStatus =
+                            it.transcriptionStatus ?: "Transcribing locally with Whisper…",
+                        transcriptionProgress =
+                            if (total > 0) (completed.toFloat() / total).coerceIn(0f, 1f) else 0f,
+                        transcriptionProgressLabel =
+                            "${formatVoiceDuration(completed)} of ${formatVoiceDuration(total)}" +
+                                (elapsed?.let { value ->
+                                    " • ${formatElapsedDuration(value)} transcribing"
+                                } ?: ""),
+                        transcriptionElapsedMs = elapsed,
+                        transcriptionText =
+                            intent.getStringExtra(VoiceTranscriptionService.EXTRA_TRANSCRIPT),
+                    )
+                }
+            }
+            VoiceJobPhase.COMPLETE -> {
+                val text = transcript?.trim().orEmpty()
+                if (text.isNotEmpty()) {
+                    sendVoiceMessage(activeTarget(job), text)
+                    voiceJobStore.clear()
+                    clearVoiceTranscription(id)
+                } else
+                    handleVoiceTranscriptionFailure(
+                        id,
+                        IllegalStateException("Whisper did not detect any speech"),
+                    )
+            }
+            VoiceJobPhase.FAILED ->
+                handleVoiceTranscriptionFailure(
+                    id,
+                    IllegalStateException(error ?: "Voice transcription failed"),
+                )
+            VoiceJobPhase.CANCELED -> clearVoiceTranscription(id)
+            VoiceJobPhase.RECORDING -> Unit
+        }
+    }
+
+    private fun activeTarget(job: VoiceJob) =
+        VoiceMessageTarget(
+            storedSessionId = job.storedSessionId,
+            runtimeSessionId = job.runtimeSessionId,
+            model = job.targetModel,
+            connectionVersion = connectionVersion,
+        )
+
+    private fun recoverCompletedVoiceJob() {
+        val job = voiceJobStore.load()?.takeIf { it.phase == VoiceJobPhase.COMPLETE } ?: return
+        val text = job.transcript?.trim().orEmpty()
+        if (text.isEmpty()) return
+        if (voiceTranscription == null) {
+            voiceTranscription = ActiveVoiceTranscription(job.id, null, activeTarget(job))
+            _state.update { it.copy(voiceTargetSessionId = job.storedSessionId) }
+        }
+        sendVoiceMessage(activeTarget(job), text)
+        voiceJobStore.clear()
+        clearVoiceTranscription(job.id)
+    }
+
+    private fun restoreVoiceJob() {
+        val job = voiceJobStore.load() ?: return
+        when (job.phase) {
+            VoiceJobPhase.TRANSCRIBING -> {
+                voiceTranscription = ActiveVoiceTranscription(job.id, null, activeTarget(job))
+                _state.update {
+                    it.copy(
+                        transcribing = true,
+                        voiceTargetSessionId = job.storedSessionId,
+                        transcriptionStatus = "Transcribing locally with Whisper…",
+                        transcriptionProgress =
+                            if (job.totalSamples > 0)
+                                (job.completedSamples.toFloat() / job.totalSamples).coerceIn(0f, 1f)
+                            else 0f,
+                    )
+                }
+            }
+            VoiceJobPhase.COMPLETE -> {
+                voiceTranscription = ActiveVoiceTranscription(job.id, null, activeTarget(job))
+                _state.update { it.copy(voiceTargetSessionId = job.storedSessionId) }
+            }
+            else -> Unit
+        }
+    }
+
+    private fun handleVoiceTranscriptionFailure(id: String, error: Throwable) {
         if (voiceTranscription?.id != id) return
         cancelVoiceOperation(id)
         if (error !is CancellationException) showError(error)
     }
 
-    private fun updateVoiceStatus(id: Long, status: String) {
+    private fun updateVoiceStatus(id: String, status: String) {
         if (voiceTranscription?.id == id) _state.update { it.copy(transcriptionStatus = status) }
     }
 
-    private fun updateVoiceProgress(id: Long, update: VoiceTranscriptionSnapshot) {
-        if (voiceTranscription?.id != id) return
-        val total = update.recordedSamples.coerceAtLeast(1)
-        val completed = update.completedSamples.coerceIn(0, total)
-        _state.update {
-            it.copy(
-                transcriptionProgress = completed.toFloat() / total,
-                transcriptionProgressLabel =
-                    buildString {
-                        append(formatVoiceDuration(completed))
-                        append(" of ")
-                        append(formatVoiceDuration(total))
-                        if (update.recording) append(" recorded")
-                    },
-                transcriptionText = update.text.takeIf(String::isNotBlank),
-            )
-        }
-    }
-
-    private fun clearVoiceTranscription(id: Long) {
+    private fun clearVoiceTranscription(id: String) {
         if (voiceTranscription?.id != id) return
         voiceTranscription = null
         clearVoiceState()
     }
 
-    private fun cancelVoiceOperation(id: Long?) {
+    private fun cancelVoiceOperation(id: String?) {
         val active = voiceTranscription?.takeIf { id == null || it.id == id } ?: return
         voiceTranscription = null
-        active.transcriber.cancel()
-        Dispatchers.IO.dispatch(EmptyCoroutineContext) { active.recorder.discard() }
+        active.recorder?.discard()
+        if (voiceJobStore.load()?.id == active.id) {
+            VoiceTranscriptionService.cancel(app)
+            voiceJobStore.clear()
+        }
         clearVoiceState()
     }
 
@@ -1440,6 +1575,7 @@ private constructor(
                 transcriptionStatus = null,
                 transcriptionProgress = null,
                 transcriptionProgressLabel = null,
+                transcriptionElapsedMs = null,
                 transcriptionText = null,
                 voiceTargetSessionId = null,
             )
@@ -2004,7 +2140,8 @@ private constructor(
         }
 
     override fun onCleared() {
-        cancelVoiceOperation(null)
+        if (state.value.voiceRecording) cancelVoiceOperation(null)
+        runCatching { app.unregisterReceiver(voiceJobReceiver) }
         dispatchClose(localWhisper)
         dispatchClose(client)
         client = null

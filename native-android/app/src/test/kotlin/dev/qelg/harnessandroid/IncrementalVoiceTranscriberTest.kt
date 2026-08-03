@@ -38,15 +38,16 @@ class IncrementalVoiceTranscriberTest {
                 onFailure = { throw it },
                 onStopped = { stops++ },
                 conversionDispatcher = StandardTestDispatcher(testScheduler),
+                elapsedRealtime = { 1_000L },
             )
 
         transcriber.noteRecordedSamples(30)
         transcriber.addChunk(ByteArray(60))
         runCurrent()
 
-        assertEquals(listOf(30), inputs)
-        assertEquals(listOf(null), prompts)
-        assertEquals("hello", snapshots.last().text)
+        assertTrue(inputs.isEmpty())
+        assertTrue(prompts.isEmpty())
+        assertTrue(snapshots.last().text.isEmpty())
         assertTrue(snapshots.last().recording)
 
         transcriber.noteRecordedSamples(40)
@@ -64,7 +65,7 @@ class IncrementalVoiceTranscriberTest {
     }
 
     @Test
-    fun partialTextAndNativeProgressAreExposedBeforeCompletion() = runTest {
+    fun chunksWaitUntilRecordingFinishesButPartialTextAndNativeProgressRemainVisible() = runTest {
         val updates = mutableListOf<VoiceTranscriptionSnapshot>()
         val completed = mutableListOf<String>()
         val release = CompletableDeferred<Unit>()
@@ -83,14 +84,22 @@ class IncrementalVoiceTranscriberTest {
                 onFailure = { throw it },
                 onStopped = {},
                 conversionDispatcher = StandardTestDispatcher(testScheduler),
+                elapsedRealtime = { 1_000L },
             )
 
         transcriber.noteRecordedSamples(100)
-        transcriber.finish(ByteArray(200), totalSamples = 100)
+        transcriber.addChunk(ByteArray(200))
+        runCurrent()
+        assertTrue(completed.isEmpty())
+        assertTrue(updates.last().recording)
+
+        transcriber.finish(ByteArray(0), totalSamples = 100)
         runCurrent()
 
         assertEquals(25, updates.last().completedSamples)
         assertEquals("visible now", updates.last().text)
+        assertFalse(updates.last().recording)
+        assertTrue(updates.last().transcriptionElapsedMs != null)
         assertTrue(completed.isEmpty())
 
         release.complete(Unit)
