@@ -514,6 +514,66 @@ private fun toolCallCount(item: ChatItem): Int =
         else -> 0
     }
 
+data class HarnessTask(val id: Int, val name: String, val state: String) {
+    val isFinished: Boolean
+        get() = state == "finished"
+
+    val isInProgress: Boolean
+        get() = state == "in_progress"
+}
+
+data class HarnessTaskList(val tasks: List<HarnessTask>) {
+    val finishedCount: Int
+        get() = tasks.count(HarnessTask::isFinished)
+
+    val inProgress: List<HarnessTask>
+        get() = tasks.filter(HarnessTask::isInProgress)
+
+    val totalCount: Int
+        get() = tasks.size
+}
+
+/**
+ * Reads the complete task state from the most recent completed `tasks` tool call. The tasks tool
+ * returns its entire list on every response; no task state is maintained separately in the client.
+ */
+fun latestHarnessTaskList(items: List<ChatItem>): HarnessTaskList? {
+    fun toolsIn(item: ChatItem): List<ChatItem.Tool> =
+        when (item) {
+            is ChatItem.Tool -> listOf(item)
+            is ChatItem.ParallelToolGroup -> item.tools
+            is ChatItem.ToolGroup -> item.operations.flatMap(::toolsIn)
+            else -> emptyList()
+        }
+
+    val latestResponse =
+        items
+            .asReversed()
+            .flatMap { toolsIn(it).asReversed() }
+            .firstOrNull { it.name == "tasks" && it.result != null }
+    return latestResponse?.result?.let(::harnessTaskListFromResult)
+}
+
+private fun harnessTaskListFromResult(result: String): HarnessTaskList? {
+    val root =
+        runCatching { Json.parseToJsonElement(result) as? JsonObject }.getOrNull() ?: return null
+    val taskElements = root["tasks"] as? JsonArray ?: return null
+    val tasks =
+        taskElements.map { element ->
+            val task = element as? JsonObject ?: return null
+            val id = task["id"]?.jsonPrimitive?.intOrNull ?: return null
+            val name =
+                task["name"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank)
+                    ?: return null
+            val state =
+                task["state"]?.jsonPrimitive?.contentOrNull?.takeIf {
+                    it in setOf("todo", "in_progress", "finished")
+                } ?: return null
+            HarnessTask(id, name, state)
+        }
+    return HarnessTaskList(tasks)
+}
+
 data class ToolValueRow(val name: String, val value: String) {
     val summary: String
         get() = "${name.singleLine()}: ${value.singleLine()}"
