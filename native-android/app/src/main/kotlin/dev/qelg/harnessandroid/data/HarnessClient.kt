@@ -109,8 +109,26 @@ class HarnessClient(
             (it as? JsonObject)?.let(SessionEvent::fromJson)
         }
 
-    suspend fun sessions(): List<JsonObject> =
-        request("GET", "/sessions").jsonArray.mapNotNull { it as? JsonObject }
+    suspend fun sessions(): List<JsonObject> = sessionsSnapshot().sessions
+
+    suspend fun sessionsSnapshot(): SessionSnapshot =
+        withContext(Dispatchers.IO) {
+            val request =
+                requestBuilder("/sessions").header("Accept", "application/json").get().build()
+            client.newCall(request).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                check(response.isSuccessful) { "Harness HTTP ${response.code}: $text" }
+                SessionSnapshot(
+                    sessions =
+                        if (text.isBlank()) emptyList()
+                        else
+                            json.parseToJsonElement(text).jsonArray.mapNotNull {
+                                it as? JsonObject
+                            },
+                    cursor = response.header("X-Harness-Event-Cursor")?.toLongOrNull(),
+                )
+            }
+        }
 
     suspend fun containers(): List<HarnessContainer> =
         request("GET", "/containers").jsonArray.mapNotNull { value ->
@@ -133,6 +151,19 @@ class HarnessClient(
         request("GET", "/session-states").jsonArray.mapNotNull {
             (it as? JsonObject)?.let(HarnessSessionState::fromJson)
         }
+
+    suspend fun sessionOverviewUpdates(sinceId: Long): SessionOverviewUpdates {
+        val response =
+            request("GET", "/sessions/updates?since_id=${sinceId.coerceAtLeast(0)}").jsonObject
+        return SessionOverviewUpdates(
+            updates =
+                (response["updates"] as? JsonArray)
+                    ?.mapNotNull { (it as? JsonObject)?.let(SessionOverviewUpdate::fromJson) }
+                    .orEmpty(),
+            nextSinceId = response["next_since_id"]?.jsonPrimitive?.longOrNull ?: sinceId,
+            hasMore = response["has_more"]?.jsonPrimitive?.booleanOrNull == true,
+        )
+    }
 
     suspend fun markSessionRead(sessionId: String): HarnessSessionState =
         HarnessSessionState.fromJson(

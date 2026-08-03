@@ -7,7 +7,7 @@ A native Kotlin/Jetpack Compose Android client for [qelg/harness](https://github
 ## Features
 
 - List, search, create, and resume persistent Harness sessions with live sessions first, then ordered by server activity
-- Show server-authoritative running, finished, unread, read, and archived session states
+- Show server-authoritative running, finished, unread, read, and archived session states; refresh the overview from one snapshot and poll incremental session updates every five seconds while active
 - Archive chats with a left swipe or from session details; archived chats return automatically after new activity
 - Load direct child sessions from the Harness child-session API, browse them from session details, and open their chats
 - Load durable message history and stream assistant/tool activity over Harness SSE

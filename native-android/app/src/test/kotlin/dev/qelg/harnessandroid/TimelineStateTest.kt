@@ -2,6 +2,7 @@ package dev.qelg.harnessandroid
 
 import dev.qelg.harnessandroid.data.ChatItem
 import dev.qelg.harnessandroid.data.HarnessSession
+import dev.qelg.harnessandroid.data.HarnessSessionState
 import dev.qelg.harnessandroid.data.formatClockTime
 import java.time.Instant
 import java.time.ZoneId
@@ -168,6 +169,21 @@ class TimelineStateTest {
             "stored-1",
             resolveStoredSessionId("runtime-1", mapOf("runtime-1" to "stored-1"), emptyList()),
         )
+    }
+
+    @Test
+    fun unreadCountersAreRemovedForLiveSessions() {
+        val sessions =
+            listOf(
+                HarnessSession(
+                    "live",
+                    "Live",
+                    active = true,
+                    sessionState = HarnessSessionState("live", "running"),
+                ),
+                HarnessSession("done", "Done"),
+            )
+        assertEquals(mapOf("done" to 1), remapUnread(mapOf("live" to 1, "done" to 1), sessions))
     }
 
     @Test

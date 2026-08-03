@@ -64,10 +64,13 @@ data class HarnessSession(
     val apiCallCount: Int = 0,
     val cumulativeTokenUsage: CumulativeTokenUsage? = null,
     val sessionState: HarnessSessionState? = null,
+    val eventId: Long? = null,
 ) {
     companion object {
         fun fromJson(value: JsonObject): HarnessSession {
             val id = value.string("id") ?: value.string("session_id") ?: ""
+            val nestedState =
+                (value["session_state"] as? JsonObject)?.let(HarnessSessionState::fromJson)
             return HarnessSession(
                 id = id,
                 title = value.string("title")?.takeIf(String::isNotBlank) ?: "Untitled session",
@@ -84,7 +87,8 @@ data class HarnessSession(
                 preview = value.string("preview"),
                 active =
                     value["active"]?.jsonPrimitive?.booleanOrNull == true ||
-                        value.string("status") in setOf("active", "running", "streaming"),
+                        value.string("status") in setOf("active", "running", "streaming") ||
+                        nestedState?.running == true,
                 runtimeId =
                     value.string("runtime_session_id")
                         ?: value.string("runtime_id")
@@ -108,10 +112,37 @@ data class HarnessSession(
                 actualCostUsd = value["actual_cost_usd"]?.jsonPrimitive?.doubleOrNull,
                 apiCallCount = value["api_call_count"]?.jsonPrimitive?.intOrNull ?: 0,
                 cumulativeTokenUsage = CumulativeTokenUsage.fromJsonOrNull(value),
+                sessionState = nestedState,
+                eventId = value["event_id"]?.jsonPrimitive?.longOrNull,
             )
         }
     }
 }
+
+data class SessionSnapshot(val sessions: List<JsonObject>, val cursor: Long?)
+
+data class SessionOverviewUpdate(
+    val eventId: Long,
+    val eventName: String,
+    val session: HarnessSession,
+) {
+    companion object {
+        fun fromJson(value: JsonObject): SessionOverviewUpdate? {
+            val eventId = value["event_id"]?.jsonPrimitive?.longOrNull ?: return null
+            val eventName = value.string("event_name") ?: return null
+            val session =
+                (value["session"] as? JsonObject)?.let(HarnessSession::fromJson) ?: return null
+            if (session.id.isBlank()) return null
+            return SessionOverviewUpdate(eventId, eventName, session)
+        }
+    }
+}
+
+data class SessionOverviewUpdates(
+    val updates: List<SessionOverviewUpdate>,
+    val nextSinceId: Long,
+    val hasMore: Boolean,
+)
 
 data class HarnessContainer(
     val containerId: String,

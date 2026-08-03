@@ -95,6 +95,23 @@ private fun HarnessApp(
     vm: ChatViewModel = viewModel(),
 ) {
     val state by vm.state.collectAsStateWithLifecycle()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, vm) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_START -> vm.onAppStarted()
+                Lifecycle.Event.ON_STOP -> vm.onAppStopped()
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
+            vm.onAppStarted()
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            vm.onAppStopped()
+        }
+    }
     val context = LocalContext.current
     var pushRegistrationRequested by rememberSaveable { mutableStateOf(false) }
     val notificationPermission =
@@ -513,6 +530,7 @@ private fun SessionPane(
             items(sessions, key = { it.id }) { session ->
                 val draft = state.drafts[session.id]?.takeIf(String::isNotBlank)
                 val unread = state.unreadCounts[session.id] ?: 0
+                val live = session.active || session.sessionState?.running == true
                 val updated = session.updatedAt?.let(::formatSessionUpdate)
                 val read = isSessionRead(session, state.readUpdates[session.id])
                 val children = childCounts[session] ?: 0
@@ -578,7 +596,7 @@ private fun SessionPane(
                                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     )
                                 }
-                                if (unread > 0) {
+                                if (!live && unread > 0) {
                                     Badge { Text("$unread unread") }
                                 } else if (session.sessionState?.unread == true) {
                                     Badge { Text("Unread") }
@@ -647,6 +665,7 @@ private fun TreePane(
             items(nodes, key = { it.session.id }) { (session, depth) ->
                 val draft = state.drafts[session.id]?.takeIf(String::isNotBlank)
                 val unread = state.unreadCounts[session.id] ?: 0
+                val live = session.active || session.sessionState?.running == true
                 val updated = session.updatedAt?.let(::formatSessionUpdate)
                 val read = isSessionRead(session, state.readUpdates[session.id])
                 val children = remember(state.sessions) { childCount(state.sessions, session.id) }
@@ -712,7 +731,7 @@ private fun TreePane(
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                             }
-                            if (unread > 0) {
+                            if (!live && unread > 0) {
                                 Badge { Text("$unread unread") }
                             } else if (session.sessionState?.unread == true) {
                                 Badge { Text("Unread") }
@@ -768,6 +787,8 @@ private fun ChatPane(
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val unread = state.selectedId?.let { state.unreadCounts[it] } ?: 0
+    val selectedLive =
+        selectedSession?.active == true || selectedSession?.sessionState?.running == true
     val selectedUpdatedAt = state.sessions.firstOrNull { it.id == state.selectedId }?.updatedAt
     var followLatest by remember(state.selectedId) { mutableStateOf(true) }
     LaunchedEffect(list, state.selectedId) {
@@ -933,7 +954,7 @@ private fun ChatPane(
                             }
                         }
                 }
-                if (unread > 0 && !followLatest)
+                if (unread > 0 && !selectedLive && !followLatest)
                     AssistChip(
                         onClick = {
                             followLatest = true

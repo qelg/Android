@@ -34,6 +34,34 @@ class HarnessClientTest {
     }
 
     @Test
+    fun decodesInlineSessionStateAndPollsOverviewUpdates() = runBlocking {
+        server(
+            MockResponse()
+                .addHeader("X-Harness-Event-Cursor", "10")
+                .setBody(
+                    """[{"id":"sess_1","title":"Live","event_id":4,"session_state":{"session_id":"sess_1","state":"running","event_id":9}}]"""
+                ),
+            MockResponse()
+                .setBody(
+                    """{"updates":[{"event_id":12,"event_name":"session.renamed","session":{"id":"sess_1","title":"Renamed","session_state":{"session_id":"sess_1","state":"finished","read":"unread","event_id":11}}}],"next_since_id":12}"""
+                ),
+        ) { client, server ->
+            val snapshot = client.sessionsSnapshot()
+            val session = snapshot.sessions.single().let(HarnessSession::fromJson)
+            assertEquals(10L, snapshot.cursor)
+            assertTrue(session.active)
+            assertEquals("running", session.sessionState?.state)
+            assertEquals(9L, session.sessionState?.eventId)
+
+            val updates = client.sessionOverviewUpdates(7)
+            assertEquals("Renamed", updates.updates.single().session.title)
+            assertEquals(12L, updates.nextSinceId)
+            assertEquals("/sessions", server.takeRequest().path)
+            assertEquals("/sessions/updates?since_id=7", server.takeRequest().path)
+        }
+    }
+
+    @Test
     fun listsAndDeletesContainers() = runBlocking {
         server(
             MockResponse()
