@@ -4,41 +4,16 @@ import android.annotation.SuppressLint
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-data class RecordedAudioTail(val pcm16: ByteArray, val totalSamples: Long, val audioFile: File)
-
-internal class PcmChunkAccumulator(private val chunkBytes: Int) {
-    private val pending = ByteArrayOutputStream()
-    var totalBytes: Long = 0
-        private set
-
-    @Synchronized
-    fun add(buffer: ByteArray, count: Int): List<ByteArray> {
-        pending.write(buffer, 0, count)
-        totalBytes += count
-        val chunks = mutableListOf<ByteArray>()
-        while (pending.size() >= chunkBytes) {
-            val available = pending.toByteArray()
-            chunks += available.copyOfRange(0, chunkBytes)
-            pending.reset()
-            if (available.size > chunkBytes)
-                pending.write(available, chunkBytes, available.size - chunkBytes)
-        }
-        return chunks
-    }
-
-    @Synchronized fun remaining(): ByteArray = pending.toByteArray()
-}
+data class RecordedAudioTail(val totalSamples: Long, val audioFile: File)
 
 @SuppressLint("MissingPermission")
 class LocalAudioRecorder(
     private val audioFile: File,
-    private val onChunk: (ByteArray) -> Unit = {},
     private val onSamplesRecorded: (Long) -> Unit = {},
     private val onMaximumDuration: () -> Unit = {},
 ) {
@@ -56,7 +31,7 @@ class LocalAudioRecorder(
             AudioFormat.ENCODING_PCM_16BIT,
             minimumBuffer.coerceAtLeast(SAMPLE_RATE),
         )
-    private val audio = PcmChunkAccumulator(CHUNK_BYTES)
+    private var totalBytes = 0L
     private val shutdownLock = Any()
     @Volatile private var recording = false
     private var released = false
@@ -99,7 +74,7 @@ class LocalAudioRecorder(
     suspend fun stop(): RecordedAudioTail =
         withContext(Dispatchers.IO) {
             shutdown()
-            RecordedAudioTail(audio.remaining(), audio.totalBytes / PCM_BYTES, audioFile)
+            RecordedAudioTail(totalBytes / PCM_BYTES, audioFile)
         }
 
     fun discard() = shutdown(deleteFile = true)
@@ -119,9 +94,8 @@ class LocalAudioRecorder(
 
     private fun acceptAudio(buffer: ByteArray, count: Int) {
         runCatching { audioOutput?.write(buffer, 0, count) }
-        val chunks = audio.add(buffer, count)
-        val samples = audio.totalBytes / PCM_BYTES
-        chunks.forEach { chunk -> runCatching { onChunk(chunk) } }
+        totalBytes += count
+        val samples = totalBytes / PCM_BYTES
         val second = samples / SAMPLE_RATE
         if (second > lastReportedSecond) {
             lastReportedSecond = second
@@ -136,11 +110,9 @@ class LocalAudioRecorder(
 
     companion object {
         const val SAMPLE_RATE = 16_000
-        internal const val CHUNK_SECONDS = 30
         internal const val MAX_RECORDING_MINUTES = 10
         private const val MAX_RECORDING_SAMPLES = SAMPLE_RATE * MAX_RECORDING_MINUTES * 60L
         private const val PCM_BYTES = 2
-        private const val CHUNK_BYTES = SAMPLE_RATE * CHUNK_SECONDS * PCM_BYTES
     }
 }
 

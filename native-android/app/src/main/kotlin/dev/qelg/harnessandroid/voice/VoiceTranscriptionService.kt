@@ -12,7 +12,6 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import dev.qelg.harnessandroid.MainActivity
 import java.io.File
-import java.io.FileInputStream
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -115,17 +114,9 @@ internal class VoiceTranscriptionService : Service() {
             whisper = LocalWhisper(this)
             val audioFile = File(job.audioPath)
             require(audioFile.isFile) { "Recorded voice audio is no longer available" }
-            withContext(Dispatchers.IO) {
-                FileInputStream(audioFile).use { input ->
-                    val buffer = ByteArray(CHUNK_BYTES)
-                    while (isActive) {
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        if (count > 0) transcriber.addChunk(buffer.copyOf(count))
-                    }
-                }
-            }
-            transcriber.finish(ByteArray(0), job.totalSamples)
+            val audio = withContext(Dispatchers.IO) { audioFile.readBytes() }
+            require(audio.isNotEmpty()) { "Recorded voice audio is empty" }
+            transcriber.finish(audio, job.totalSamples)
             val outcome = result.await()
             outcome.fold(
                 onSuccess = { text ->
@@ -307,8 +298,6 @@ internal class VoiceTranscriptionService : Service() {
         private const val NOTIFICATION_ID = 401
         private const val REQUEST_OPEN = 402
         private const val REQUEST_CANCEL = 403
-        private const val CHUNK_BYTES =
-            LocalAudioRecorder.SAMPLE_RATE * LocalAudioRecorder.CHUNK_SECONDS * 2
 
         fun start(context: Context, job: VoiceJob) {
             VoiceJobStore(context).save(job.copy(phase = VoiceJobPhase.TRANSCRIBING))
