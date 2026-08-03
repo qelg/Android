@@ -5,6 +5,7 @@ import dev.qelg.harnessandroid.data.ConnectionConfig
 import dev.qelg.harnessandroid.data.DraftSubmission
 import dev.qelg.harnessandroid.data.HarnessContainer
 import dev.qelg.harnessandroid.data.HarnessSession
+import dev.qelg.harnessandroid.data.HarnessTask
 import dev.qelg.harnessandroid.data.ModelCatalog
 import dev.qelg.harnessandroid.data.ModelSelection
 import dev.qelg.harnessandroid.data.ThinkingLevel
@@ -78,6 +79,40 @@ class ModelsTest {
         assertEquals(1, tasks.finishedCount)
         assertEquals(listOf("working"), tasks.inProgress.map { it.name })
         assertEquals(listOf("done", "working", "later"), tasks.tasks.map { it.name })
+    }
+
+    @Test
+    fun taskLinksAreOptionalAndOnlyNonblankValuesAreDecoded() {
+        val linked =
+            HarnessTask.fromJson(
+                buildJsonObject {
+                    put("id", 1)
+                    put("name", "linked")
+                    put("state", "todo")
+                    put("link", "https://example.com/tasks/1")
+                }
+            )
+        val absent =
+            HarnessTask.fromJson(
+                buildJsonObject {
+                    put("id", 2)
+                    put("name", "unlinked")
+                    put("state", "todo")
+                }
+            )
+        val blank =
+            HarnessTask.fromJson(
+                buildJsonObject {
+                    put("id", 3)
+                    put("name", "blank")
+                    put("state", "todo")
+                    put("link", "   ")
+                }
+            )
+
+        assertEquals("https://example.com/tasks/1", linked?.link)
+        assertEquals(null, absent?.link)
+        assertEquals(null, blank?.link)
     }
 
     @Test

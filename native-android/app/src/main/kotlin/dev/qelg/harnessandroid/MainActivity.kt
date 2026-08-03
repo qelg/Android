@@ -3,7 +3,9 @@
 package dev.qelg.harnessandroid
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.widget.TextView
@@ -409,6 +411,7 @@ internal fun SessionArchiveSwipeBox(
 
 @Composable
 internal fun SessionStateOverview(state: HarnessSessionState) {
+    val context = LocalContext.current
     val inProgress = state.tasks.filter(HarnessTask::isInProgress)
     if (!state.running || inProgress.isEmpty()) {
         Text(
@@ -434,6 +437,7 @@ internal fun SessionStateOverview(state: HarnessSessionState) {
             inProgress.forEach { task ->
                 Text(
                     task.name,
+                    modifier = taskLinkModifier(task, context),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
@@ -2939,8 +2943,19 @@ private fun CompactToolValuePreview(preview: ToolValuePreview) {
     }
 }
 
+private fun taskLinkModifier(task: HarnessTask, context: Context): Modifier {
+    val link = task.link ?: return Modifier
+    if (!isSafeExternalUrl(link)) return Modifier
+    return Modifier.clickable(
+        onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(link))) },
+        onClickLabel = "Open task link",
+        role = Role.Button,
+    )
+}
+
 @Composable
 internal fun TaskProgressPanel(taskList: HarnessTaskList, onOpen: () -> Unit) {
+    val context = LocalContext.current
     Surface(
         modifier =
             Modifier.fillMaxWidth()
@@ -2958,6 +2973,7 @@ internal fun TaskProgressPanel(taskList: HarnessTaskList, onOpen: () -> Unit) {
             taskList.inProgress.forEach { task ->
                 Text(
                     task.name,
+                    modifier = taskLinkModifier(task, context),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 2,
@@ -2970,6 +2986,7 @@ internal fun TaskProgressPanel(taskList: HarnessTaskList, onOpen: () -> Unit) {
 
 @Composable
 internal fun TaskListScreen(taskList: HarnessTaskList, onDismiss: () -> Unit) {
+    val context = LocalContext.current
     BackHandler(onBack = onDismiss)
     val orderedTasks =
         remember(taskList) {
@@ -3008,7 +3025,21 @@ internal fun TaskListScreen(taskList: HarnessTaskList, onDismiss: () -> Unit) {
                     items(orderedTasks, key = { it.id }) { task ->
                         ListItem(
                             headlineContent = { Text(task.name) },
-                            supportingContent = { Text(taskStateLabel(task.state)) },
+                            supportingContent = {
+                                Column {
+                                    task.link?.let { link ->
+                                        Text(
+                                            link,
+                                            modifier = taskLinkModifier(task, context),
+                                            color =
+                                                if (isSafeExternalUrl(link))
+                                                    MaterialTheme.colorScheme.primary
+                                                else LocalContentColor.current,
+                                        )
+                                    }
+                                    Text(taskStateLabel(task.state))
+                                }
+                            },
                             leadingContent = {
                                 Icon(
                                     when (task.state) {
