@@ -63,6 +63,15 @@ class TimelineStateTest {
     }
 
     @Test
+    fun websocketCompletionWithoutPendingDeltaAppendsAfterPreviousAssistantMessage() {
+        val items = listOf<ChatItem>(ChatItem.Message("assistant", "previous"))
+        assertEquals(
+            items + ChatItem.Message("assistant", "new", pendingCanonical = true),
+            reconcileAssistantCompletion(items, "new", onlyPending = true),
+        )
+    }
+
+    @Test
     fun historyCompletionPreservesEventsReceivedWhileLoading() {
         val history = listOf<ChatItem>(ChatItem.Message("user", "Question", "u1"))
         val live = listOf<ChatItem>(ChatItem.Message("assistant", "Streaming"))
