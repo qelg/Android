@@ -1953,6 +1953,7 @@ private constructor(
                                 "live:${++liveMessageSequence}",
                                 messageId,
                                 onlyPending = true,
+                                canonical = true,
                             )
                         )
                         .copy(
@@ -2379,6 +2380,7 @@ internal fun reconcileAssistantCompletion(
     uiKey: String? = null,
     id: String? = null,
     onlyPending: Boolean = false,
+    canonical: Boolean = false,
 ): List<ChatItem> {
     if (finalText.isBlank()) return items
     // A durable completion may be replayed after history has already loaded it.
@@ -2394,7 +2396,11 @@ internal fun reconcileAssistantCompletion(
         return items.toMutableList().apply {
             val current = this[stableIndex] as ChatItem.Message
             this[stableIndex] =
-                current.copy(text = finalText, timestamp = timestamp ?: current.timestamp)
+                current.copy(
+                    text = finalText,
+                    timestamp = timestamp ?: current.timestamp,
+                    pendingCanonical = if (canonical) false else current.pendingCanonical,
+                )
         }
     val index =
         items.indexOfLast {
@@ -2410,7 +2416,7 @@ internal fun reconcileAssistantCompletion(
                 id = id,
                 timestamp = timestamp,
                 uiKey = uiKey,
-                pendingCanonical = true,
+                pendingCanonical = !canonical,
             )
     return items.toMutableList().apply {
         val current = this[index] as ChatItem.Message
@@ -2419,7 +2425,7 @@ internal fun reconcileAssistantCompletion(
                 text = finalText,
                 id = id ?: current.id,
                 timestamp = timestamp ?: current.timestamp,
-                pendingCanonical = true,
+                pendingCanonical = !canonical,
             )
     }
 }
