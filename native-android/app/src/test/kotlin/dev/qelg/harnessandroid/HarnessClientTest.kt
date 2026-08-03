@@ -7,6 +7,8 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 import okhttp3.mockwebserver.*
 import org.junit.Assert.*
 import org.junit.Test
@@ -277,6 +279,31 @@ class HarnessClientTest {
             assertEquals(1, events[2].payload["in_progress"]?.jsonPrimitive?.intOrNull)
             assertEquals(5L, events[2].payload["event_id"]?.jsonPrimitive?.content?.toLong())
             assertEquals("/sessions/sess_1/messages/updates?since_id=2", server.takeRequest().path)
+        }
+    }
+
+    @Test
+    fun watchesAccountWideWebSocketEventsAndPreservesDurableCursor() = runBlocking {
+        val response =
+            MockResponse()
+                .withWebSocketUpgrade(
+                    object : WebSocketListener() {
+                        override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
+                            webSocket.send(
+                                """{"type":"event","cursor":7,"event":{"id":7,"name":"session.state","tags":{"session":"sess_1","state":"finished","read":"unread"},"payload":{"source_event_id":6},"created_at_ms":1752757200123}}"""
+                            )
+                            webSocket.close(1000, "done")
+                        }
+                    }
+                )
+        server(response) { client, server ->
+            val received = async { client.events.filter { it.type == "session.state" }.first() }
+            client.watchEvents(6, setOf("session.state"))
+            val event = withTimeout(5_000) { received.await() }
+            assertEquals("sess_1", event.sessionId)
+            assertEquals("finished", event.payload["state"]?.jsonPrimitive?.content)
+            assertEquals(7L, event.cursor)
+            assertEquals("/events", server.takeRequest().path)
         }
     }
 

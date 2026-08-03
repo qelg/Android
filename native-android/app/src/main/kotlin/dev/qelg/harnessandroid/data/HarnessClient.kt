@@ -19,6 +19,9 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
 
 /** HTTP/SSE client for the public API exposed by qelg/harness. */
 class HarnessClient(
@@ -32,6 +35,7 @@ class HarnessClient(
     val events: Flow<GatewayEvent> = eventChannel.receiveAsFlow()
     @Volatile private var closed = false
     @Volatile private var watcherCall: Call? = null
+    @Volatile private var watcherSocket: WebSocket? = null
     private var watcherJob: Job? = null
 
     suspend fun connect() {
@@ -221,6 +225,61 @@ class HarnessClient(
         }
     }
 
+    fun watchEvents(sinceId: Long? = null, eventTypes: Set<String> = setOf("*")) {
+        stopWatching()
+        watcherJob =
+            scope.launch(Dispatchers.IO) {
+                var cursor = sinceId
+                var hadConnection = false
+                while (isActive && !closed) {
+                    try {
+                        cursor = streamWebSocket(cursor, eventTypes)
+                        if (!hadConnection) {
+                            eventChannel.send(GatewayEvent("connection.restored", null, emptyMap()))
+                        }
+                        hadConnection = true
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Throwable) {
+                        if (isActive && !closed) {
+                            if (hadConnection) {
+                                eventChannel.send(
+                                    GatewayEvent(
+                                        "connection.lost",
+                                        null,
+                                        mapOf("message" to JsonPrimitive(error.message.orEmpty())),
+                                    )
+                                )
+                            }
+                            delay(RECONNECT_DELAY_MS)
+                        }
+                    }
+                }
+            }
+    }
+
+    fun subscribeEventTypes(eventTypes: Set<String>, sinceId: Long? = null) {
+        watcherSocket?.send(
+            buildJsonObject {
+                    put("type", "subscribe")
+                    put("event_types", JsonArray(eventTypes.map(::JsonPrimitive)))
+                    sinceId?.let { put("since_id", it) }
+                }
+                .toString()
+        )
+    }
+
+    fun unsubscribeEventTypes(eventTypes: Set<String>) {
+        watcherSocket?.send(
+            buildJsonObject {
+                    put("type", "unsubscribe")
+                    put("event_types", JsonArray(eventTypes.map(::JsonPrimitive)))
+                }
+                .toString()
+        )
+    }
+
+    /** Legacy per-session SSE watcher, retained while older servers are deployed. */
     fun watchSession(sessionId: String, sinceId: Long? = null) {
         stopWatching()
         watcherJob =
@@ -257,9 +316,80 @@ class HarnessClient(
     fun stopWatching() {
         watcherCall?.cancel()
         watcherCall = null
+        watcherSocket?.cancel()
+        watcherSocket = null
         watcherJob?.cancel()
         watcherJob = null
     }
+
+    private suspend fun streamWebSocket(sinceId: Long?, eventTypes: Set<String>): Long? =
+        withContext(Dispatchers.IO) {
+            val frames = Channel<String>(Channel.UNLIMITED)
+            var failure: Throwable? = null
+            val request =
+                Request.Builder()
+                    .url(config.normalizedBaseUrl.websocketUrl("/events"))
+                    .header("Authorization", "Bearer ${config.token}")
+                    .build()
+            val socket =
+                client.newWebSocket(
+                    request,
+                    object : WebSocketListener() {
+                        override fun onOpen(webSocket: WebSocket, response: Response) {
+                            watcherSocket = webSocket
+                            webSocket.send(
+                                buildJsonObject {
+                                        put("type", "subscribe")
+                                        put(
+                                            "event_types",
+                                            JsonArray(eventTypes.map(::JsonPrimitive)),
+                                        )
+                                        sinceId?.let { put("since_id", it) }
+                                    }
+                                    .toString()
+                            )
+                        }
+
+                        override fun onMessage(webSocket: WebSocket, text: String) {
+                            frames.trySend(text)
+                        }
+
+                        override fun onFailure(
+                            webSocket: WebSocket,
+                            t: Throwable,
+                            response: Response?,
+                        ) {
+                            failure = t
+                            frames.close()
+                        }
+
+                        override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                            frames.close()
+                        }
+                    },
+                )
+            watcherSocket = socket
+            var cursor = sinceId
+            try {
+                for (text in frames) {
+                    val frame = json.parseToJsonElement(text).jsonObject
+                    if (frame.string("type") != "event") continue
+                    val event = frame["event"] as? JsonObject ?: continue
+                    val eventCursor = frame["cursor"]?.jsonPrimitive?.longOrNull
+                    eventCursor?.let { cursor = maxOf(cursor ?: 0L, it) }
+                    translateEvent(
+                        event.string("name").orEmpty(),
+                        event,
+                        event.sessionId().orEmpty(),
+                        eventCursor,
+                    )
+                }
+                failure?.let { throw it }
+                cursor
+            } finally {
+                if (watcherSocket === socket) watcherSocket = null
+            }
+        }
 
     private suspend fun streamUpdates(sessionId: String, sinceId: Long?): Long? =
         withContext(Dispatchers.IO) {
@@ -285,7 +415,8 @@ class HarnessClient(
                     suspend fun dispatch() {
                         if (data.isNotEmpty()) {
                             val event = json.parseToJsonElement(data.joinToString("\n")).jsonObject
-                            translateEvent(eventName.orEmpty(), event, sessionId)
+                            val eventRecord = event["event"] as? JsonObject ?: event
+                            translateEvent(eventName.orEmpty(), eventRecord, sessionId, eventId)
                             eventId?.let { cursor = maxOf(cursor ?: 0L, it) }
                         }
                         eventName = null
@@ -312,138 +443,116 @@ class HarnessClient(
 
     private suspend fun translateEvent(
         name: String,
-        event: JsonObject,
+        eventRecord: JsonObject,
         sessionId: String,
-    ): String? {
-        val eventRecord = event["event"] as? JsonObject ?: event
+        cursor: Long? = null,
+    ) {
         val payload = eventRecord["payload"] as? JsonObject ?: eventRecord
-        val eventName = name.ifBlank { eventRecord.string("name").orEmpty() }
-        val timestamp = eventRecord["created_at_ms"]
+        val eventSessionId =
+            eventRecord.sessionId()?.takeIf(String::isNotBlank)
+                ?: sessionId.takeIf(String::isNotBlank)
         fun values(vararg entries: Pair<String, JsonElement>): Map<String, JsonElement> = buildMap {
             entries.forEach { (key, value) -> put(key, value) }
-            timestamp?.let { put("created_at_ms", it) }
+            eventRecord["created_at_ms"]?.let { put("created_at_ms", it) }
         }
-        when (eventName) {
+        suspend fun emit(type: String, payload: Map<String, JsonElement>) {
+            eventChannel.send(GatewayEvent(type, eventSessionId, payload, eventRecord, cursor))
+        }
+        when (name) {
             "llm.delta" ->
-                eventChannel.send(
-                    GatewayEvent(
-                        "message.delta",
-                        sessionId,
-                        values("text" to (payload["delta"] ?: JsonPrimitive(""))),
-                    )
-                )
+                emit("message.delta", values("text" to (payload["delta"] ?: JsonPrimitive(""))))
             "secret.ask" ->
-                eventChannel.send(
-                    GatewayEvent(
-                        "secret.ask",
-                        sessionId,
-                        values(
-                            "event_id" to (eventRecord["id"] ?: JsonPrimitive("")),
-                            "identifier" to (payload["identifier"] ?: JsonPrimitive("")),
-                            "description" to (payload["description"] ?: JsonPrimitive("")),
-                            "container" to (payload["container"] ?: JsonPrimitive("")),
-                        ),
-                    )
+                emit(
+                    "secret.ask",
+                    values(
+                        "event_id" to (eventRecord["id"] ?: JsonPrimitive("")),
+                        "identifier" to (payload["identifier"] ?: JsonPrimitive("")),
+                        "description" to (payload["description"] ?: JsonPrimitive("")),
+                        "container" to (payload["container"] ?: JsonPrimitive("")),
+                    ),
                 )
             "tool.call.requested" ->
-                eventChannel.send(
-                    GatewayEvent(
-                        "tool.start",
-                        sessionId,
-                        values(
-                            "name" to (payload["tool"] ?: JsonPrimitive("tool")),
-                            "tool_call_id" to (payload["run_id"] ?: JsonPrimitive("tool")),
-                            "arguments" to (payload["input"] ?: JsonObject(emptyMap())),
-                        ),
-                    )
+                emit(
+                    "tool.start",
+                    values(
+                        "name" to (payload["tool"] ?: JsonPrimitive("tool")),
+                        "tool_call_id" to (payload["run_id"] ?: JsonPrimitive("tool")),
+                        "arguments" to (payload["input"] ?: JsonObject(emptyMap())),
+                    ),
                 )
             "chat.message.tool.created" ->
-                eventChannel.send(
-                    GatewayEvent(
-                        "tool.complete",
-                        sessionId,
-                        values(
-                            "name" to (payload["tool"] ?: JsonPrimitive("tool")),
-                            "tool_call_id" to (payload["run_id"] ?: JsonPrimitive("tool")),
-                            "result" to (payload["content"] ?: JsonPrimitive("")),
-                        ),
-                    )
+                emit(
+                    "tool.complete",
+                    values(
+                        "name" to (payload["tool"] ?: JsonPrimitive("tool")),
+                        "tool_call_id" to (payload["run_id"] ?: JsonPrimitive("tool")),
+                        "result" to (payload["content"] ?: JsonPrimitive("")),
+                    ),
                 )
             "chat.message.assistant.created" -> {
                 val content = payload["content"]
                 if (content.hasFunctionCall()) {
-                    if (content.reasoningContent() != null) {
-                        eventChannel.send(
-                            GatewayEvent(
-                                "message.reasoning",
-                                sessionId,
-                                values(
-                                    "message_id" to
-                                        (eventRecord["id"] ?: JsonPrimitive("assistant"))
-                                ),
-                            )
-                        )
-                    }
-                } else {
-                    eventChannel.send(
-                        GatewayEvent(
-                            "message.complete",
-                            sessionId,
+                    if (content.reasoningContent() != null)
+                        emit(
+                            "message.reasoning",
                             values(
-                                "text" to JsonPrimitive(content.assistantText()),
-                                "message_id" to (eventRecord["id"] ?: JsonPrimitive("assistant")),
+                                "message_id" to (eventRecord["id"] ?: JsonPrimitive("assistant"))
                             ),
                         )
+                } else {
+                    emit(
+                        "message.complete",
+                        values(
+                            "text" to JsonPrimitive(content.assistantText()),
+                            "message_id" to (eventRecord["id"] ?: JsonPrimitive("assistant")),
+                        ),
                     )
                 }
             }
             "session.state" -> {
                 val tags = eventRecord["tags"] as? JsonObject ?: JsonObject(emptyMap())
-                val statePayload = buildMap {
-                    put("session_id", JsonPrimitive(sessionId))
-                    listOf("state", "read", "archive").forEach { key ->
-                        tags[key]?.let { put(key, it) }
+                val statePayload =
+                    buildMap<String, JsonElement> {
+                        put("session_id", JsonPrimitive(eventSessionId.orEmpty()))
+                        listOf("state", "read", "archive").forEach { key ->
+                            tags[key]?.let { put(key, it) }
+                        }
+                        listOf(
+                                "source_event_id",
+                                "outcome",
+                                "tasks",
+                                "total",
+                                "finished",
+                                "in_progress",
+                            )
+                            .forEach { key -> payload[key]?.let { put(key, it) } }
+                        eventRecord["id"]?.let { put("event_id", it) }
+                        eventRecord["created_at_ms"]?.let { put("created_at_ms", it) }
                     }
-                    listOf(
-                            "source_event_id",
-                            "outcome",
-                            "tasks",
-                            "total",
-                            "finished",
-                            "in_progress",
-                        )
-                        .forEach { key -> payload[key]?.let { put(key, it) } }
-                    eventRecord["id"]?.let { put("event_id", it) }
-                    timestamp?.let { put("created_at_ms", it) }
-                }
-                eventChannel.send(GatewayEvent("session.state", sessionId, statePayload))
+                emit("session.state", statePayload)
             }
             "chat.message.user.created" ->
-                eventChannel.send(
-                    GatewayEvent(
-                        "message.user",
-                        sessionId,
-                        values(
-                            "text" to (payload["content"] ?: JsonPrimitive("")),
-                            "message_id" to (eventRecord["id"] ?: JsonPrimitive("user")),
-                        ),
-                    )
+                emit(
+                    "message.user",
+                    values(
+                        "text" to (payload["content"] ?: JsonPrimitive("")),
+                        "message_id" to (eventRecord["id"] ?: JsonPrimitive("user")),
+                    ),
                 )
             "llm.run.failed" -> {
-                eventChannel.send(
-                    GatewayEvent(
-                        "error",
-                        sessionId,
-                        values(
-                            "message" to
-                                JsonPrimitive(payload.string("error") ?: "Harness LLM run failed")
-                        ),
-                    )
+                emit(
+                    "error",
+                    values(
+                        "message" to
+                            JsonPrimitive(payload.string("error") ?: "Harness LLM run failed")
+                    ),
                 )
-                eventChannel.send(GatewayEvent("session.inactive", sessionId, emptyMap()))
+                emit("session.inactive", emptyMap())
             }
+            "session.created" -> emit("session.created", payload)
+            "session.renamed" -> emit("session.renamed", payload)
+            else -> emit("raw.event", payload)
         }
-        return null
     }
 
     suspend fun interrupt() = Unit
@@ -577,6 +686,16 @@ internal fun JsonElement?.hasFunctionCall(): Boolean =
                 this["content"].hasFunctionCall() ||
                 this["output"].hasFunctionCall()
         else -> false
+    }
+
+private fun JsonObject.sessionId(): String? =
+    string("session_id") ?: (this["tags"] as? JsonObject)?.string("session")
+
+private fun String.websocketUrl(path: String): String =
+    when {
+        startsWith("https://") -> "wss://" + substring("https://".length) + path
+        startsWith("http://") -> "ws://" + substring("http://".length) + path
+        else -> this + path
     }
 
 private fun String.urlEncode() = java.net.URLEncoder.encode(this, Charsets.UTF_8.name())
