@@ -415,7 +415,13 @@ class HarnessClient(
                         if (data.isNotEmpty()) {
                             val event = json.parseToJsonElement(data.joinToString("\n")).jsonObject
                             val eventRecord = event["event"] as? JsonObject ?: event
-                            translateEvent(eventName.orEmpty(), eventRecord, sessionId, eventId)
+                            translateEvent(
+                                eventName.orEmpty(),
+                                eventRecord,
+                                sessionId,
+                                eventId,
+                                event["message"] as? JsonObject,
+                            )
                             eventId?.let { cursor = maxOf(cursor ?: 0L, it) }
                         }
                         eventName = null

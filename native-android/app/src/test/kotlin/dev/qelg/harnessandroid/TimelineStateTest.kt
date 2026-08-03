@@ -72,6 +72,20 @@ class TimelineStateTest {
     }
 
     @Test
+    fun replayedCanonicalCompletionWithSameIdDoesNotAppendPlainMessage() {
+        val canonical =
+            ChatItem.Message("assistant", "**answer**", id = "42", pendingCanonical = false)
+        val result =
+            reconcileAssistantCompletion(
+                listOf(canonical),
+                "**answer**",
+                id = "42",
+                onlyPending = true,
+            )
+        assertEquals(listOf(canonical), result)
+    }
+
+    @Test
     fun historyCompletionPreservesEventsReceivedWhileLoading() {
         val history = listOf<ChatItem>(ChatItem.Message("user", "Question", "u1"))
         val live = listOf<ChatItem>(ChatItem.Message("assistant", "Streaming"))
