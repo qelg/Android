@@ -308,6 +308,41 @@ class HarnessClientTest {
     }
 
     @Test
+    fun convertsWebSocketMessageEventsUsingServerMessageProjection() = runBlocking {
+        val response =
+            MockResponse()
+                .withWebSocketUpgrade(
+                    object : WebSocketListener() {
+                        override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
+                            webSocket.send(
+                                """{"type":"event","cursor":8,"event":{"id":8,"name":"chat.message.user.created","session_id":"sess_1","tags":{"session":"sess_1"},"payload":{"content":"hello"}},"message":{"id":8,"role":"user","content":"hello"}}"""
+                            )
+                            webSocket.send(
+                                """{"type":"event","cursor":9,"event":{"id":9,"name":"chat.message.assistant.created","session_id":"sess_1","tags":{"session":"sess_1"},"payload":{"content":"answer"}},"message":{"id":9,"role":"assistant","content":"answer"}}"""
+                            )
+                            webSocket.close(1000, "done")
+                        }
+                    }
+                )
+        server(response) { client, _ ->
+            val received = async {
+                client.events
+                    .filter { it.type == "message.user" || it.type == "message.complete" }
+                    .take(2)
+                    .toList()
+            }
+            client.watchEvents(
+                7,
+                setOf("chat.message.user.created", "chat.message.assistant.created"),
+            )
+            val events = withTimeout(5_000) { received.await() }
+            assertEquals(listOf("message.user", "message.complete"), events.map { it.type })
+            assertEquals("hello", events[0].payload["text"]?.jsonPrimitive?.content)
+            assertEquals("answer", events[1].payload["text"]?.jsonPrimitive?.content)
+        }
+    }
+
+    @Test
     fun chatGptCodexOffersSupportedModels() = runBlocking {
         server(
             MockResponse().setBody("""{"providers":["chatgpt-codex"]}"""),
