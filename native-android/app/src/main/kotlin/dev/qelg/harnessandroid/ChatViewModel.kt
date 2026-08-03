@@ -1712,7 +1712,7 @@ private constructor(
             // chat usable through the existing per-session SSE stream while
             // the account-wide connection retries.
             val selected = state.value.selectedId
-            if (selected != null) client?.watchSession(runtimeId ?: selected)
+            if (selected != null) client?.watchSession(runtimeId ?: selected, overviewCursor)
             return
         }
 
@@ -2381,6 +2381,21 @@ internal fun reconcileAssistantCompletion(
     onlyPending: Boolean = false,
 ): List<ChatItem> {
     if (finalText.isBlank()) return items
+    // A durable completion may be replayed after history has already loaded it.
+    // Match its stable server ID first so the replay updates the existing item
+    // instead of appending a second, plain streaming item.
+    val stableIndex =
+        id?.let { messageId ->
+            items.indexOfLast {
+                it is ChatItem.Message && it.role == "assistant" && it.id == messageId
+            }
+        } ?: -1
+    if (stableIndex >= 0)
+        return items.toMutableList().apply {
+            val current = this[stableIndex] as ChatItem.Message
+            this[stableIndex] =
+                current.copy(text = finalText, timestamp = timestamp ?: current.timestamp)
+        }
     val index =
         items.indexOfLast {
             it is ChatItem.Message &&
