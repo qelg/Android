@@ -86,6 +86,20 @@ class TimelineStateTest {
     }
 
     @Test
+    fun websocketCompletionMarksStreamingItemCanonicalForMarkdown() {
+        val streaming = ChatItem.Message("assistant", "partial", pendingCanonical = true)
+        val result =
+            reconcileAssistantCompletion(
+                listOf(streaming),
+                "**complete**",
+                id = "42",
+                onlyPending = true,
+                canonical = true,
+            )
+        assertEquals(false, (result.single() as ChatItem.Message).pendingCanonical)
+    }
+
+    @Test
     fun historyCompletionPreservesEventsReceivedWhileLoading() {
         val history = listOf<ChatItem>(ChatItem.Message("user", "Question", "u1"))
         val live = listOf<ChatItem>(ChatItem.Message("assistant", "Streaming"))
