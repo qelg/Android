@@ -4,6 +4,19 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#if defined(__aarch64__) && defined(__linux__)
+#include <sys/auxv.h>
+
+#ifndef HWCAP2_SVE2
+#define HWCAP2_SVE2 (1UL << 1)
+#endif
+#ifndef HWCAP2_I8MM
+#define HWCAP2_I8MM (1UL << 13)
+#endif
+#ifndef HWCAP2_SME
+#define HWCAP2_SME (1UL << 23)
+#endif
+#endif
 #include "ggml-backend.h"
 #include "whisper.h"
 
@@ -11,6 +24,22 @@ namespace {
 void throw_runtime(JNIEnv * env, const char * message) {
     jclass type = env->FindClass("java/lang/RuntimeException");
     env->ThrowNew(type, message);
+}
+
+std::string arm_hardware_features() {
+#if defined(__aarch64__) && defined(__linux__)
+    const unsigned long hwcap = getauxval(AT_HWCAP);
+    const unsigned long hwcap2 = getauxval(AT_HWCAP2);
+    return std::string("Android HWCAP features: ") +
+        "DOTPROD=" + std::to_string((hwcap & HWCAP_ASIMDDP) != 0) +
+        " FP16_VA=" + std::to_string((hwcap & HWCAP_FPHP) != 0) +
+        " MATMUL_INT8=" + std::to_string((hwcap2 & HWCAP2_I8MM) != 0) +
+        " SVE=" + std::to_string((hwcap & HWCAP_SVE) != 0) +
+        " SVE2=" + std::to_string((hwcap2 & HWCAP2_SVE2) != 0) +
+        " SME=" + std::to_string((hwcap2 & HWCAP2_SME) != 0);
+#else
+    return "Android HWCAP features: unavailable on this ABI";
+#endif
 }
 
 #ifdef HARNESS_GGML_RUNTIME_DISPATCH
@@ -57,6 +86,9 @@ bool prepare_cpu_backend(JNIEnv * env, jstring native_library_dir) {
                         __android_log_print(
                             ANDROID_LOG_INFO, "LocalWhisper",
                             "Selected CPU backend variant: %s", variant);
+                        const std::string features = arm_hardware_features();
+                        __android_log_print(
+                            ANDROID_LOG_INFO, "LocalWhisper", "%s", features.c_str());
                         return;
                     }
                 } catch (const std::exception &) {
@@ -212,6 +244,7 @@ Java_dev_qelg_harnessandroid_voice_WhisperNative_systemInfo(JNIEnv * env, jobjec
     std::string info = whisper_print_system_info();
 #ifdef HARNESS_GGML_RUNTIME_DISPATCH
     if (!cpu_backend_variant.empty()) {
+        info += "\n" + arm_hardware_features();
         info += "\nSelected CPU backend variant: ";
         info += cpu_backend_variant;
     }

@@ -24,9 +24,10 @@ backend.
 The Whisper settings dialog also permits Automatic or 1–8 worker threads. Automatic uses up to four threads, matching the four performance-oriented cores on Tensor G4 while
 leaving its efficiency cores available to Android. The fastest value
 can vary by model, recording length, device temperature, and Android scheduling. The native system
-information, including selected CPU features and the exact selected CPU backend variant, is written to
-Logcat under `LocalWhisper` when the first model context is created. The native loader also emits a
-separate `Selected CPU backend variant: ...` line.
+information, including the runtime HWCAP values for DOTPROD, FP16, i8mm, SVE, SVE2, and SME plus
+the exact selected CPU backend variant, is written to Logcat under `LocalWhisper` when the first model
+context is created. The native loader also emits separate `Android HWCAP features: ...` and
+`Selected CPU backend variant: ...` lines.
 
 KleidiAI remains disabled: the vendored release would fetch a non-vendored dependency, and its
 principal optimized path does not match the app's Q5 model catalog. OpenMP, fast-math, hard CPU
