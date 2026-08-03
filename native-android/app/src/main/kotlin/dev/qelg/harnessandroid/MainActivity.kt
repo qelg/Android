@@ -929,7 +929,7 @@ private fun ChatPane(
             state.tokenUsage?.let { usage ->
                 ContextUsageBar(usage, onClick = { showUsageDetails = true })
             }
-            if (state.transcribing) {
+            if (state.voiceRecording || state.transcribing) {
                 Column(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
@@ -939,9 +939,13 @@ private fun ChatPane(
                             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            if (state.voiceTargetSessionId == state.selectedId)
-                                state.transcriptionStatus ?: "Transcribing locally with Whisper…"
-                            else "Transcribing voice for another chat…",
+                            when {
+                                state.voiceRecording -> "Recording voice…"
+                                state.voiceTargetSessionId == state.selectedId ->
+                                    state.transcriptionStatus
+                                        ?: "Transcribing locally with Whisper…"
+                                else -> "Transcribing voice for another chat…"
+                            },
                             Modifier.weight(1f),
                         )
                         state.transcriptionProgress?.let { progress ->

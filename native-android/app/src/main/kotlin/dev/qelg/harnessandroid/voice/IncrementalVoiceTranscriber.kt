@@ -1,11 +1,15 @@
 package dev.qelg.harnessandroid.voice
 
+import android.os.SystemClock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -14,12 +18,13 @@ internal data class VoiceTranscriptionSnapshot(
     val completedSamples: Long,
     val recordedSamples: Long,
     val recording: Boolean,
+    val transcriptionElapsedMs: Long?,
 )
 
 /**
- * Transcribes each completed recording chunk exactly once. Work on the first 30-second chunk can
- * overlap the inexpensive AudioRecord capture; stopping only leaves the unprocessed tail. Calls are
- * deliberately serialized because a whisper context cannot be used concurrently.
+ * Buffers completed recording chunks while capture is active, then transcribes them in order after
+ * recording stops. Calls are deliberately serialized because a whisper context cannot be used
+ * concurrently.
  */
 internal class IncrementalVoiceTranscriber(
     private val scope: CoroutineScope,
@@ -37,6 +42,7 @@ internal class IncrementalVoiceTranscriber(
     private val onFailure: (Throwable) -> Unit,
     private val onStopped: () -> Unit,
     private val conversionDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val elapsedRealtime: () -> Long = { SystemClock.elapsedRealtime() },
 ) {
     private sealed interface Command {
         data class Chunk(val pcm16: ByteArray) : Command
@@ -52,8 +58,11 @@ internal class IncrementalVoiceTranscriber(
     private var visibleCompletedSamples = 0L
     private var transcript = ""
     private var visibleTranscript = ""
+    private var pendingChunks = mutableListOf<ByteArray>()
     private var recording = true
     private var started = false
+    private var transcriptionStartedAtMs: Long? = null
+    private var elapsedTicker: Job? = null
     private var stopped = false
 
     private val job =
@@ -61,9 +70,12 @@ internal class IncrementalVoiceTranscriber(
             try {
                 for (command in commands) {
                     when (command) {
-                        is Command.Chunk -> process(command.pcm16)
+                        is Command.Chunk -> pendingChunks += command.pcm16
                         is Command.Finish -> {
-                            process(command.pcm16)
+                            if (command.pcm16.isNotEmpty()) pendingChunks += command.pcm16
+                            val chunks = pendingChunks
+                            pendingChunks = mutableListOf()
+                            for (chunk in chunks) process(chunk)
                             val finalText = synchronized(snapshotLock) { transcript.trim() }
                             require(finalText.isNotEmpty()) { "Whisper did not detect any speech" }
                             onComplete(finalText)
@@ -75,6 +87,7 @@ internal class IncrementalVoiceTranscriber(
                 onFailure(error)
             } finally {
                 synchronized(snapshotLock) { stopped = true }
+                elapsedTicker?.cancel()
                 commands.close()
                 onStopped()
             }
@@ -86,13 +99,13 @@ internal class IncrementalVoiceTranscriber(
 
     fun noteRecordedSamples(count: Long) {
         recordedSamples.accumulateAndGet(count, ::maxOf)
-        emitSnapshotIfStarted()
+        emitSnapshot()
     }
 
     fun finish(pcm16: ByteArray, totalSamples: Long) {
         synchronized(snapshotLock) { recording = false }
         recordedSamples.accumulateAndGet(totalSamples, ::maxOf)
-        emitSnapshotIfStarted()
+        emitSnapshot()
         commands.trySend(Command.Finish(pcm16))
     }
 
@@ -149,14 +162,20 @@ internal class IncrementalVoiceTranscriber(
                 if (started) false
                 else {
                     started = true
+                    transcriptionStartedAtMs = elapsedRealtime()
                     true
                 }
             }
-        if (notify) onStarted()
-    }
-
-    private fun emitSnapshotIfStarted() {
-        if (synchronized(snapshotLock) { started && !stopped }) emitSnapshot()
+        if (notify) {
+            onStarted()
+            elapsedTicker =
+                scope.launch {
+                    while (isActive) {
+                        delay(1_000)
+                        emitSnapshot()
+                    }
+                }
+        }
     }
 
     private fun emitSnapshot() {
@@ -168,6 +187,8 @@ internal class IncrementalVoiceTranscriber(
                     completedSamples = visibleCompletedSamples.coerceAtLeast(0),
                     recordedSamples = recordedSamples.get().coerceAtLeast(visibleCompletedSamples),
                     recording = recording,
+                    transcriptionElapsedMs =
+                        transcriptionStartedAtMs?.let { (elapsedRealtime() - it).coerceAtLeast(0) },
                 )
             }
         scope.launch { onUpdate(snapshot) }

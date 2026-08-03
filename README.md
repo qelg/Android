@@ -17,13 +17,13 @@ A native Kotlin/Jetpack Compose Android client for [qelg/harness](https://github
 - Keep per-session timelines, drafts, and read state while switching between chats
 - Store an optional bearer token using Android Keystore
 - Discover providers and tools exposed by Harness
-- Record, progressively transcribe, and send voice messages entirely on-device with a configurable Whisper model (verified model downloads on first use, live progress and partial text)
+- Record and transcribe voice messages entirely on-device with a configurable Whisper model (verified model downloads on first use, live progress and partial text)
 - Receive end-to-end encrypted finished top-level session notifications through UnifiedPush, with notification taps opening the session directly
 
 Capabilities qelg/harness does not expose—approval responses, run cancellation, and detailed token/context
 accounting—stay unavailable rather than using a separate legacy backend. Voice transcription is local and does
 not upload microphone audio. A recording remains bound to the chat where it was started, even when switching chats before transcription finishes. Choose Tiny, Base, Small, Medium, or Large v3 Turbo from the voice-settings
-button in a chat; larger models improve quality at the cost of storage, memory, and transcription time. ARM64 devices select optimized dot-product, FP16, and i8mm CPU kernels at runtime, and the same dialog lets you choose Automatic or 1–8 transcription threads. For recordings of at least 30 seconds, completed chunks are queued for final-model transcription while capture continues; that work begins as soon as the model is ready and is reused after you stop. Recordings automatically stop at ten minutes to keep queued on-device audio bounded.
+button in a chat; larger models improve quality at the cost of storage, memory, and transcription time. ARM64 devices select optimized dot-product, FP16, and i8mm CPU kernels at runtime, and the same dialog lets you choose Automatic or 1–8 transcription threads. Recording is completed before Whisper starts, avoiding contention between capture and inference. Transcription runs in an Android foreground service with a progress notification, so it can continue when the app is backgrounded; recordings automatically stop at ten minutes.
 
 ## Setup
 

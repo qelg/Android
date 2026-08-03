@@ -5,10 +5,12 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.FileOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-data class RecordedAudioTail(val pcm16: ByteArray, val totalSamples: Long)
+data class RecordedAudioTail(val pcm16: ByteArray, val totalSamples: Long, val audioFile: File)
 
 internal class PcmChunkAccumulator(private val chunkBytes: Int) {
     private val pending = ByteArrayOutputStream()
@@ -35,6 +37,7 @@ internal class PcmChunkAccumulator(private val chunkBytes: Int) {
 
 @SuppressLint("MissingPermission")
 class LocalAudioRecorder(
+    private val audioFile: File,
     private val onChunk: (ByteArray) -> Unit = {},
     private val onSamplesRecorded: (Long) -> Unit = {},
     private val onMaximumDuration: () -> Unit = {},
@@ -60,14 +63,20 @@ class LocalAudioRecorder(
     private var lastReportedSecond = 0L
     private var maximumDurationReported = false
     private var thread: Thread? = null
+    private var audioOutput: FileOutputStream? = null
 
     fun start() {
         try {
             check(recorder.state == AudioRecord.STATE_INITIALIZED) { "Microphone is unavailable" }
+            audioFile.parentFile?.mkdirs()
+            audioOutput = FileOutputStream(audioFile, false)
             recorder.startRecording()
         } catch (error: Throwable) {
             synchronized(shutdownLock) {
+                runCatching { audioOutput?.close() }
+                audioOutput = null
                 recorder.release()
+                audioFile.delete()
                 released = true
             }
             throw error
@@ -90,22 +99,26 @@ class LocalAudioRecorder(
     suspend fun stop(): RecordedAudioTail =
         withContext(Dispatchers.IO) {
             shutdown()
-            RecordedAudioTail(audio.remaining(), audio.totalBytes / PCM_BYTES)
+            RecordedAudioTail(audio.remaining(), audio.totalBytes / PCM_BYTES, audioFile)
         }
 
-    fun discard() = shutdown()
+    fun discard() = shutdown(deleteFile = true)
 
-    private fun shutdown() =
+    private fun shutdown(deleteFile: Boolean = false) =
         synchronized(shutdownLock) {
             if (released) return@synchronized
             recording = false
             runCatching { recorder.stop() }
             thread?.join()
+            runCatching { audioOutput?.close() }
+            audioOutput = null
             recorder.release()
+            if (deleteFile) audioFile.delete()
             released = true
         }
 
     private fun acceptAudio(buffer: ByteArray, count: Int) {
+        runCatching { audioOutput?.write(buffer, 0, count) }
         val chunks = audio.add(buffer, count)
         val samples = audio.totalBytes / PCM_BYTES
         chunks.forEach { chunk -> runCatching { onChunk(chunk) } }
