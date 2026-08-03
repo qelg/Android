@@ -820,15 +820,9 @@ private constructor(
     }
 
     /**
-     * Reload the full message history from the server and merge it with live items. This is the
-     * same code path used by [select] on initial load, so live updates and initial load stay
-     * consistent.
-     *
-     * Motivation: the incremental live-event pipeline (message.delta, tool.start/complete,
-     * clarify.request, etc.) can miss or drop state when the user enters a chat mid-turn or
-     * reconnects after a transient disconnect. Replacing the items with the server-authoritative
-     * history after each completed assistant turn avoids stale/duplicated items and clears ghost
-     * clarify/tool cards without needing special-case cleanup.
+     * Load the initial or explicitly recovered message history and merge it with live items. Normal
+     * WebSocket message events are applied directly and do not call this method; the history
+     * endpoint remains useful when selecting a session or recovering a rotated runtime.
      */
     private fun reloadHistory() {
         val api = client ?: return
@@ -1774,7 +1768,10 @@ private constructor(
         }
         if (event.type == "session.renamed") {
             val sessionId = event.sessionId ?: return
-            val title = (raw?.get("payload") as? JsonObject)?.string("title") ?: return
+            val title =
+                event.payload["title"]?.jsonPrimitive?.contentOrNull
+                    ?: (raw?.get("payload") as? JsonObject)?.string("title")
+                    ?: return
             _state.update { current ->
                 current.copy(
                     sessions =
@@ -1883,7 +1880,6 @@ private constructor(
                             clarify = null,
                         )
                 }
-                reloadHistory()
                 refreshTokenUsage()
             }
             "session.info" -> {
@@ -1933,14 +1929,8 @@ private constructor(
                     else current
                 }
             }
-            "message.user" -> {
-                val text = event.payload["text"]?.jsonPrimitive?.contentOrNull.orEmpty()
-                state.value.selectedId?.let { selectedId ->
-                    _state.update { it.consumeQueuedMessage(selectedId, text) }
-                }
-                reloadHistory()
-            }
-            "message.reasoning" -> reloadHistory()
+            "message.user" -> applyUserMessageEvent(event)
+            "message.reasoning" -> applyReasoningEvent(event)
             "message.delta" ->
                 appendDelta(event.payload["text"]?.jsonPrimitive?.contentOrNull.orEmpty())
             "message.complete" -> {
@@ -1962,6 +1952,7 @@ private constructor(
                                 timestamp,
                                 "live:${++liveMessageSequence}",
                                 messageId,
+                                onlyPending = true,
                             )
                         )
                         .copy(
@@ -1973,7 +1964,6 @@ private constructor(
                         )
                 }
                 incrementUnread(state.value.selectedId)
-                reloadHistory()
                 refreshTokenUsage()
             }
             "tool.start",
@@ -2107,6 +2097,83 @@ private constructor(
                     )
                 )
             }
+        }
+    }
+
+    /** Apply the canonical user message from the WebSocket without reloading history. */
+    private fun applyUserMessageEvent(event: GatewayEvent) {
+        val sessionId = storedSessionId(event) ?: return
+        if (state.value.selectedId != sessionId) return
+        val text = event.payload["text"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        val messageId =
+            event.payload["message_id"]?.jsonPrimitive?.contentOrNull
+                ?: event.rawEvent?.get("id")?.jsonPrimitive?.contentOrNull
+        val timestamp = event.payload.instant()
+        _state.update { current ->
+            val timeline = current.items.toMutableList()
+            val pendingIndex =
+                timeline.indexOfLast {
+                    it is ChatItem.Message &&
+                        it.role == "user" &&
+                        (it.id == messageId || (it.pendingCanonical && it.text == text))
+                }
+            val canonical =
+                ChatItem.Message(
+                    role = "user",
+                    text = text,
+                    id = messageId,
+                    timestamp = timestamp,
+                    uiKey =
+                        if (pendingIndex >= 0) (timeline[pendingIndex] as ChatItem.Message).uiKey
+                        else null,
+                    pendingCanonical = false,
+                )
+            if (pendingIndex >= 0) timeline[pendingIndex] = canonical else timeline += canonical
+            current
+                .withCurrentItems(timeline)
+                .consumeQueuedMessage(sessionId, text)
+                .copy(activeSessionIds = current.activeSessionIds + sessionId)
+        }
+    }
+
+    /** Preserve reasoning from a function-call assistant event without history reload. */
+    private fun applyReasoningEvent(event: GatewayEvent) {
+        val sessionId = storedSessionId(event) ?: return
+        if (state.value.selectedId != sessionId) return
+        val text = event.payload["text"]?.jsonPrimitive?.contentOrNull.orEmpty()
+        if (text.isBlank()) return
+        val messageId = event.payload["message_id"]?.jsonPrimitive?.contentOrNull
+        val summary = event.payload["is_summary"]?.jsonPrimitive?.booleanOrNull == true
+        _state.update { current ->
+            val timeline = current.items.toMutableList()
+            val index =
+                timeline.indexOfLast {
+                    it is ChatItem.Message &&
+                        it.role == "assistant" &&
+                        (it.id == messageId || it.text.isBlank())
+                }
+            val reasoning =
+                if (index >= 0)
+                    (timeline[index] as ChatItem.Message).let { existing ->
+                        existing.copy(
+                            id = messageId ?: existing.id,
+                            reasoning =
+                                listOfNotNull(existing.reasoning?.takeIf(String::isNotBlank), text)
+                                    .joinToString("\n"),
+                            reasoningIsSummary = summary,
+                        )
+                    }
+                else
+                    ChatItem.Message(
+                        role = "assistant",
+                        text = "",
+                        id = messageId,
+                        timestamp = event.payload.instant(),
+                        reasoning = text,
+                        reasoningIsSummary = summary,
+                    )
+            if (index >= 0) timeline[index] = reasoning else timeline += reasoning
+            current.withCurrentItems(timeline)
         }
     }
 
@@ -2311,9 +2378,15 @@ internal fun reconcileAssistantCompletion(
     timestamp: Instant? = null,
     uiKey: String? = null,
     id: String? = null,
+    onlyPending: Boolean = false,
 ): List<ChatItem> {
     if (finalText.isBlank()) return items
-    val index = items.indexOfLast { it is ChatItem.Message && it.role == "assistant" }
+    val index =
+        items.indexOfLast {
+            it is ChatItem.Message &&
+                it.role == "assistant" &&
+                (!onlyPending || it.pendingCanonical)
+        }
     if (index == -1)
         return items +
             ChatItem.Message(

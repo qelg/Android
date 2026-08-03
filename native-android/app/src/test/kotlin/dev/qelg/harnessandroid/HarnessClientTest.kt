@@ -343,6 +343,29 @@ class HarnessClientTest {
     }
 
     @Test
+    fun forwardsWebSocketSessionRenameEvents() = runBlocking {
+        val response =
+            MockResponse()
+                .withWebSocketUpgrade(
+                    object : WebSocketListener() {
+                        override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
+                            webSocket.send(
+                                """{"type":"event","cursor":11,"event":{"id":11,"name":"session.renamed","session_id":"sess_1","tags":{"session":"sess_1"},"payload":{"title":"Renamed"}}}"""
+                            )
+                            webSocket.close(1000, "done")
+                        }
+                    }
+                )
+        server(response) { client, _ ->
+            val received = async { client.events.filter { it.type == "session.renamed" }.first() }
+            client.watchEvents(10, setOf("session.renamed"))
+            val event = withTimeout(5_000) { received.await() }
+            assertEquals("sess_1", event.sessionId)
+            assertEquals("Renamed", event.payload["title"]?.jsonPrimitive?.content)
+        }
+    }
+
+    @Test
     fun chatGptCodexOffersSupportedModels() = runBlocking {
         server(
             MockResponse().setBody("""{"providers":["chatgpt-codex"]}"""),

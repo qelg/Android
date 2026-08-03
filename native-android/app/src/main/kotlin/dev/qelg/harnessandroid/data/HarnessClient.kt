@@ -493,13 +493,16 @@ class HarnessClient(
             "chat.message.assistant.created" -> {
                 val content = messagePayload["content"]
                 if (content.hasFunctionCall()) {
-                    if (content.reasoningContent() != null)
+                    content.reasoningContent()?.let { reasoning ->
                         emit(
                             "message.reasoning",
                             values(
-                                "message_id" to (eventRecord["id"] ?: JsonPrimitive("assistant"))
+                                "message_id" to (eventRecord["id"] ?: JsonPrimitive("assistant")),
+                                "text" to JsonPrimitive(reasoning.text),
+                                "is_summary" to JsonPrimitive(reasoning.isSummary),
                             ),
                         )
+                    }
                 } else {
                     emit(
                         "message.complete",
