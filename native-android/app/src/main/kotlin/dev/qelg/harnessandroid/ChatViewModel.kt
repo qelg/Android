@@ -11,12 +11,17 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.*
 
 @JvmInline value class ErrorMessage(val text: String)
+
+private const val OVERVIEW_POLL_INTERVAL_MS = 5_000L
+private const val OVERVIEW_REFRESH_AFTER_MS = 30_000L
 
 data class VoiceMessageTarget(
     val storedSessionId: String,
@@ -257,6 +262,9 @@ internal fun ChatUiState.withSessionState(sessionState: HarnessSessionState): Ch
         if (sessionState.running) activeSessionIds + sessionState.sessionId
         else activeSessionIds - sessionState.sessionId
     return copy(
+        unreadCounts =
+            if (sessionState.running) clearUnread(unreadCounts, sessionState.sessionId)
+            else unreadCounts,
         sessions =
             sessions.map { session ->
                 if (session.id == sessionState.sessionId)
@@ -328,7 +336,10 @@ private constructor(
     private var usageJob: Job? = null
     private var chatGptUsageJob: Job? = null
     private var containersJob: Job? = null
-    private val backgroundSessionJobs = mutableMapOf<String, Job>()
+    private var overviewPollJob: Job? = null
+    private var overviewCursor = 0L
+    private var lastOverviewSyncAtMs = 0L
+    private var appStarted = false
     private var connectionVersion = 0L
     private var selectionVersion = 0L
     private var historyRequestVersion = 0L
@@ -370,11 +381,13 @@ private constructor(
         usageJob?.cancel()
         chatGptUsageJob?.cancel()
         containersJob?.cancel()
-        backgroundSessionJobs.values.forEach(Job::cancel)
-        backgroundSessionJobs.clear()
+        overviewPollJob?.cancel()
+        overviewPollJob = null
         dispatchClose(client)
         runtimeId = null
         usageStoredId = null
+        overviewCursor = 0L
+        lastOverviewSyncAtMs = 0L
         runtimeToStored.clear()
         sessionModelOverrides.clear()
         val version = ++connectionVersion
@@ -431,6 +444,7 @@ private constructor(
                             _state.update { it.copy(connecting = false) }
                             refreshChatGptUsage()
                             restoreSelection()
+                            if (appStarted) startOverviewPolling(next, version)
                         }
                     }
                     .onFailure {
@@ -453,8 +467,8 @@ private constructor(
         usageJob?.cancel()
         chatGptUsageJob?.cancel()
         containersJob?.cancel()
-        backgroundSessionJobs.values.forEach(Job::cancel)
-        backgroundSessionJobs.clear()
+        overviewPollJob?.cancel()
+        overviewPollJob = null
         connectionVersion++
         selectionVersion++
         dispatchClose(client)
@@ -486,14 +500,12 @@ private constructor(
     fun hideTree() = _state.update { it.copy(treeParentId = null) }
 
     fun dismissChat() {
-        monitorCurrentSessionIfActive()
         client?.stopWatching()
         runtimeId = null
         _state.update { it.copy(selectedId = null, treeParentId = null) }
     }
 
     fun backFromChat() {
-        monitorCurrentSessionIfActive()
         client?.stopWatching()
         runtimeId = null
         _state.update {
@@ -590,24 +602,30 @@ private constructor(
     }
 
     private suspend fun refreshSessions(api: HarnessClient, version: Long) {
-        val result = api.sessions()
+        val snapshot = api.sessionsSnapshot()
+        val result = snapshot.sessions
         if (client !== api || connectionVersion != version) return
         val knownChildren = state.value.childSessions.values.flatten()
+        val parsed = result.map(HarnessSession::fromJson).filter { it.id.isNotBlank() }
         val baseSessions =
             applySessionModelOverrides(
-                (result.map(HarnessSession::fromJson) + knownChildren)
-                    .filter { it.id.isNotBlank() }
-                    .distinctBy { it.id },
+                (parsed + knownChildren).distinctBy { it.id },
                 sessionModelOverrides,
             )
-        // Keep the session list usable against older deployments, while preferring
-        // the server-authoritative state projection whenever it is available.
+        // New Harness versions include the latest state in each session. Fall back to
+        // /session-states for older deployments that do not yet provide that field.
+        val inlineStates = baseSessions.mapNotNull(HarnessSession::sessionState)
         val currentSessionStates = state.value.sessions.mapNotNull(HarnessSession::sessionState)
         val sessionStates =
-            runCatching { api.sessionStates() }
-                .getOrNull()
-                ?.let { newestSessionStates(it, currentSessionStates) } ?: currentSessionStates
-        val sessions = applySessionStates(baseSessions, sessionStates)
+            if (inlineStates.isNotEmpty() || baseSessions.isEmpty()) inlineStates
+            else runCatching { api.sessionStates() }.getOrNull().orEmpty()
+        val sessions =
+            applySessionStates(
+                baseSessions,
+                newestSessionStates(sessionStates, currentSessionStates),
+            )
+        overviewCursor = maxOf(overviewCursor, snapshot.cursor ?: overviewCursorFor(sessions))
+        lastOverviewSyncAtMs = System.currentTimeMillis()
         _state.update {
             val selectedSession = sessions.firstOrNull { session -> session.id == it.selectedId }
             val selectedModel =
@@ -627,6 +645,79 @@ private constructor(
                     else it.modelCatalog,
             )
         }
+    }
+
+    private suspend fun pollSessionOverview(api: HarnessClient, version: Long) {
+        do {
+            val response = api.sessionOverviewUpdates(overviewCursor)
+            if (client !== api || connectionVersion != version) return
+            overviewCursor = maxOf(overviewCursor, response.nextSinceId)
+            if (response.updates.isNotEmpty()) {
+                val incoming =
+                    applySessionModelOverrides(
+                        response.updates.map(SessionOverviewUpdate::session),
+                        sessionModelOverrides,
+                    )
+                _state.update { current ->
+                    val sessions =
+                        mergeSessionsById(current.sessions, incoming).map { session ->
+                            session.sessionState?.let { state ->
+                                session.copy(
+                                    active = state.running,
+                                    updatedAt = state.updatedAt ?: session.updatedAt,
+                                    endReason = state.outcome ?: session.endReason,
+                                )
+                            } ?: session
+                        }
+                    current.copy(
+                        sessions = sessions,
+                        unreadCounts = remapUnread(current.unreadCounts, sessions),
+                        activeSessionIds =
+                            sessions.filter(HarnessSession::active).mapTo(mutableSetOf()) { it.id },
+                    )
+                }
+            }
+        } while (response.hasMore)
+    }
+
+    private fun overviewCursorFor(sessions: List<HarnessSession>): Long =
+        sessions.maxOfOrNull { session ->
+            maxOf(session.eventId ?: 0L, session.sessionState?.eventId ?: 0L)
+        } ?: 0L
+
+    fun onAppStarted() {
+        appStarted = true
+        client
+            ?.takeIf { !state.value.connecting }
+            ?.let { startOverviewPolling(it, connectionVersion) }
+    }
+
+    fun onAppStopped() {
+        appStarted = false
+        overviewPollJob?.cancel()
+        overviewPollJob = null
+    }
+
+    private fun startOverviewPolling(api: HarnessClient, version: Long) {
+        overviewPollJob?.cancel()
+        overviewPollJob =
+            viewModelScope.launch {
+                if (
+                    System.currentTimeMillis() - lastOverviewSyncAtMs >= OVERVIEW_REFRESH_AFTER_MS
+                ) {
+                    runCatching { refreshSessions(api, version) }
+                        .onFailure { if (client === api) showError(it) }
+                }
+                while (
+                    currentCoroutineContext().isActive &&
+                        client === api &&
+                        connectionVersion == version
+                ) {
+                    delay(OVERVIEW_POLL_INTERVAL_MS)
+                    runCatching { pollSessionOverview(api, version) }
+                        .onFailure { if (client === api) showError(it) }
+                }
+            }
     }
 
     private suspend fun refreshModels(api: HarnessClient, session: HarnessSession?, version: Long) {
@@ -769,18 +860,6 @@ private constructor(
         }
     }
 
-    private fun scheduleRefresh() {
-        val api = client ?: return
-        val version = connectionVersion
-        if (refreshJob?.isActive == true) return
-        refreshJob =
-            viewModelScope.launch {
-                delay(250)
-                runCatching { refreshSessions(api, version) }
-                    .onFailure { if (client === api) showError(it) }
-            }
-    }
-
     /**
      * Reload the full message history from the server and merge it with live items. This is the
      * same code path used by [select] on initial load, so live updates and initial load stay
@@ -882,8 +961,6 @@ private constructor(
     fun select(session: HarnessSession, selectedFromTree: Boolean = false) {
         if (state.value.connecting) return
         val api = client ?: return
-        monitorCurrentSessionIfActive()
-        backgroundSessionJobs.remove(session.id)?.cancel()
         selectionJob?.cancel()
         usageJob?.cancel()
         val version = ++selectionVersion
@@ -1407,10 +1484,7 @@ private constructor(
         }
         viewModelScope.launch {
             runCatching { api.submit(target.runtimeSessionId, clean, target.model) }
-                .onSuccess {
-                    monitorBackgroundSession(api, target.storedSessionId, target.connectionVersion)
-                    scheduleRefresh()
-                }
+                .onSuccess {}
                 .onFailure { error ->
                     val now = Instant.now()
                     _state.update {
@@ -1422,77 +1496,6 @@ private constructor(
                     showError(error)
                 }
         }
-    }
-
-    private fun monitorCurrentSessionIfActive() {
-        val current = state.value
-        val stored = current.selectedId ?: return
-        val api = client ?: return
-        if (!current.active && stored !in current.activeSessionIds) return
-        monitorBackgroundSession(api, stored, connectionVersion)
-    }
-
-    private fun monitorBackgroundSession(
-        api: HarnessClient,
-        storedSessionId: String,
-        expectedConnectionVersion: Long,
-    ) {
-        backgroundSessionJobs.remove(storedSessionId)?.cancel()
-        backgroundSessionJobs[storedSessionId] =
-            viewModelScope.launch {
-                try {
-                    repeat(300) {
-                        delay(1_000)
-                        if (
-                            client !== api ||
-                                connectionVersion != expectedConnectionVersion ||
-                                state.value.selectedId == storedSessionId
-                        )
-                            return@launch
-                        val sessions = runCatching { api.sessions() }.getOrNull() ?: return@repeat
-                        val session =
-                            sessions.map(HarnessSession::fromJson).firstOrNull {
-                                it.id == storedSessionId
-                            }
-                        if (session == null || session.active) return@repeat
-                        val historyRows =
-                            runCatching { api.history(storedSessionId) }.getOrNull()
-                                ?: return@repeat
-                        val history = messagesFromHistoryRows(historyRows)
-                        if (
-                            client !== api ||
-                                connectionVersion != expectedConnectionVersion ||
-                                state.value.selectedId == storedSessionId
-                        )
-                            return@launch
-                        _state.update {
-                            val existing = it.timelineFor(storedSessionId)
-                            val timeline = reconcileHistoryItems(history, existing, existing)
-                            it.withTimeline(storedSessionId, timeline)
-                                .copy(activeSessionIds = it.activeSessionIds - storedSessionId)
-                                .reconcileQueuedMessages(storedSessionId, timeline)
-                        }
-                        incrementUnread(storedSessionId)
-                        refreshSessions(api, expectedConnectionVersion)
-                        return@launch
-                    }
-                } catch (cancelled: kotlinx.coroutines.CancellationException) {
-                    throw cancelled
-                } catch (error: Throwable) {
-                    if (client === api && connectionVersion == expectedConnectionVersion) {
-                        _state.update {
-                            it.copy(activeSessionIds = it.activeSessionIds - storedSessionId)
-                        }
-                    }
-                } finally {
-                    if (
-                        backgroundSessionJobs[storedSessionId] ===
-                            kotlinx.coroutines.currentCoroutineContext()[Job]
-                    ) {
-                        backgroundSessionJobs.remove(storedSessionId)
-                    }
-                }
-            }
     }
 
     fun reportError(error: Throwable) = showError(error)
@@ -1551,9 +1554,6 @@ private constructor(
                                 }
                             }
                         }
-                        .onFailure {
-                            if (client === api && connectionVersion == version) scheduleRefresh()
-                        }
                 }
             }
         }
@@ -1567,7 +1567,11 @@ private constructor(
 
     private fun incrementUnread(sessionId: String?) {
         if (sessionId == null) return
-        _state.update { it.copy(unreadCounts = addUnread(it.unreadCounts, sessionId)) }
+        _state.update { current ->
+            val session = current.sessions.firstOrNull { it.id == sessionId }
+            if (session?.sessionState?.running == true || session?.active == true) current
+            else current.copy(unreadCounts = addUnread(current.unreadCounts, sessionId))
+        }
     }
 
     private fun storedSessionId(event: GatewayEvent): String? {
@@ -1702,11 +1706,6 @@ private constructor(
                         _state.update { it.copy(activeSessionIds = it.activeSessionIds - id) }
                     }
             }
-            if (
-                event.type in
-                    setOf("session.active", "session.inactive", "message.delta", "message.complete")
-            )
-                scheduleRefresh()
             if (event.type == "message.complete") incrementUnread(stored)
             return
         }
@@ -1734,7 +1733,6 @@ private constructor(
                             clarify = null,
                         )
                 }
-                scheduleRefresh()
                 reloadHistory()
                 refreshTokenUsage()
             }
@@ -1791,7 +1789,6 @@ private constructor(
                     _state.update { it.consumeQueuedMessage(selectedId, text) }
                 }
                 reloadHistory()
-                scheduleRefresh()
             }
             "message.reasoning" -> reloadHistory()
             "message.delta" ->
@@ -1826,7 +1823,6 @@ private constructor(
                         )
                 }
                 incrementUnread(state.value.selectedId)
-                scheduleRefresh()
                 reloadHistory()
                 refreshTokenUsage()
             }
@@ -2009,8 +2005,6 @@ private constructor(
 
     override fun onCleared() {
         cancelVoiceOperation(null)
-        backgroundSessionJobs.values.forEach(Job::cancel)
-        backgroundSessionJobs.clear()
         dispatchClose(localWhisper)
         dispatchClose(client)
         client = null
@@ -2294,7 +2288,9 @@ internal fun remapUnread(
     sessions: List<HarnessSession>,
 ): Map<String, Int> =
     unread.entries.fold(emptyMap()) { result, (key, count) ->
-        val storedId = sessions.firstOrNull { it.id == key || it.runtimeId == key }?.id ?: key
+        val session = sessions.firstOrNull { it.id == key || it.runtimeId == key }
+        if (session?.sessionState?.running == true || session?.active == true) return@fold result
+        val storedId = session?.id ?: key
         result + (storedId to ((result[storedId] ?: 0) + count))
     }
 

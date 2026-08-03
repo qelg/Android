@@ -36,6 +36,18 @@ class SessionStateTest {
     }
 
     @Test
+    fun runningStateClearsLocalUnreadCount() {
+        val initial =
+            ChatUiState(
+                selectedId = "session",
+                sessions = listOf(HarnessSession("session", "Session")),
+                unreadCounts = mapOf("session" to 1),
+            )
+        val running = initial.withSessionState(HarnessSessionState("session", "running"))
+        assertEquals(emptyMap<String, Int>(), running.unreadCounts)
+    }
+
+    @Test
     fun serverStatesDriveActivityOrderingAndReadStatus() {
         val sessions =
             listOf(
