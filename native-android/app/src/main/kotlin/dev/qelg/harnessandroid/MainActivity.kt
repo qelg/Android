@@ -118,11 +118,11 @@ private fun HarnessApp(
     var pushRegistrationRequested by rememberSaveable { mutableStateOf(false) }
     val notificationPermission =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
-    LaunchedEffect(state.configured, state.connecting, state.error) {
+    LaunchedEffect(state.ui.configured, isStateConnecting(state), state.ui.error) {
         if (
-            state.configured &&
-                !state.connecting &&
-                state.error == null &&
+            state.ui.configured &&
+                !isStateConnecting(state) &&
+                state.ui.error == null &&
                 !pushRegistrationRequested
         ) {
             pushRegistrationRequested = true
@@ -132,18 +132,20 @@ private fun HarnessApp(
             PushRegistration.register(context as MainActivity)
         }
     }
-    LaunchedEffect(requestedSessionId, state.connecting, state.sessions) {
+    LaunchedEffect(requestedSessionId, isStateConnecting(state), overviewSessions(state)) {
         val sessionId = requestedSessionId ?: return@LaunchedEffect
-        if (state.connecting) return@LaunchedEffect
-        val session = state.sessions.firstOrNull { it.id == sessionId } ?: return@LaunchedEffect
-        if (state.selectedId != sessionId) vm.select(session)
+        if (isStateConnecting(state)) return@LaunchedEffect
+        val session =
+            overviewSessions(state).firstOrNull { it.id.value == sessionId }
+                ?: return@LaunchedEffect
+        if (state.ui.selectedSessionId?.value != sessionId) vm.select(session.id)
         consumeRequestedSession()
     }
     Box(
         Modifier.fillMaxSize()
             .windowInsetsPadding(contentInsets(WindowInsets.safeDrawing, WindowInsets.ime))
     ) {
-        if (!state.configured) ConnectionScreen(vm::connect) else MainScreen(state, vm)
+        if (!state.ui.configured) ConnectionScreen(vm::connect) else MainScreen(state, vm)
     }
 }
 
@@ -204,13 +206,20 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
     val context = LocalContext.current
     var showPushSettings by rememberSaveable { mutableStateOf(false) }
     var showContainerStorage by rememberSaveable { mutableStateOf(false) }
-    var showSessions by rememberSaveable { mutableStateOf(state.selectedId == null) }
-    LaunchedEffect(state.selectedId) { if (state.selectedId != null) showSessions = false }
-    val inTree = state.treeParentId != null
-    val inChat = state.selectedId != null
+    var showSessions by rememberSaveable {
+        mutableStateOf(state.ui.selectedSessionId?.value == null)
+    }
+    LaunchedEffect(state.ui.selectedSessionId?.value) {
+        if (state.ui.selectedSessionId?.value != null) showSessions = false
+    }
+    val inTree = state.ui.treeParentSessionId?.value != null
+    val inChat = state.ui.selectedSessionId?.value != null
     val treeSessions =
-        remember(state.sessions, state.treeParentId) {
-            state.treeParentId?.let { sessionTreeWithDepth(state.sessions, it) }.orEmpty()
+        remember(overviewSessions(state), state.ui.treeParentSessionId?.value) {
+            state.ui.treeParentSessionId
+                ?.value
+                ?.let { sessionViewTreeWithDepth(overviewSessions(state), SessionId(it)) }
+                .orEmpty()
         }
     BoxWithConstraints(
         Modifier.fillMaxSize().fullScreenDetailBackground(active = showContainerStorage)
@@ -272,11 +281,11 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
     }
     if (showContainerStorage) {
         ContainerStorageScreen(
-            containers = state.containers,
-            sessions = state.sessions,
-            loading = state.containersLoading,
-            error = state.containersError,
-            deletingContainerIds = state.deletingContainerIds,
+            containers = state.harness.resources.containers.value.orEmpty(),
+            sessions = overviewSessions(state),
+            loading = state.harness.resources.containers.loading,
+            error = state.harness.resources.containers.error,
+            deletingContainerIds = state.ui.deletingContainerIds,
             onRefresh = vm::refreshContainers,
             onDelete = vm::deleteContainer,
             onOpenSession = {
@@ -286,7 +295,7 @@ private fun MainScreen(state: ChatUiState, vm: ChatViewModel) {
             onDismiss = { showContainerStorage = false },
         )
     }
-    UpdateDialog(state.updateState, vm::downloadUpdate, vm::resetUpdateState)
+    UpdateDialog(state.ui.updateState, vm::downloadUpdate, vm::resetUpdateState)
 }
 
 @Composable
@@ -457,19 +466,23 @@ private fun SessionPane(
     openContainerStorage: () -> Unit,
     openPushSettings: () -> Unit,
 ) {
-    var showArchived by rememberSaveable { mutableStateOf(false) }
     var searching by rememberSaveable { mutableStateOf(false) }
     val allSessions =
-        remember(state.sessions, state.search, state.drafts, showArchived) {
-            val matching = filterSessions(state.sessions, state.search)
-            prioritizeSessionsWithDrafts(
-                filterArchivedSessions(matching, showArchived),
-                state.drafts,
+        remember(
+            overviewSessions(state),
+            state.ui.search,
+            draftValues(state),
+            state.ui.showArchived,
+        ) {
+            val matching = filterSessionViews(overviewSessions(state), state.ui.search)
+            prioritizeSessionViewsWithDrafts(
+                visibleSessionViews(matching, state.ui.showArchived),
+                state.ui.sessionUi,
             )
         }
-    val sessions = remember(allSessions) { rootSessions(allSessions) }
+    val sessions = remember(allSessions) { rootSessionViews(allSessions) }
     val childCounts =
-        remember(allSessions) { sessions.associateWith { childCount(allSessions, it.id) } }
+        remember(allSessions) { sessions.associateWith { childViewCount(allSessions, it.id) } }
     Column(modifier) {
         TopAppBar(
             title = { Text("Sessions") },
@@ -479,12 +492,13 @@ private fun SessionPane(
                 IconButton(openContainerStorage) {
                     Icon(Icons.Default.Storage, "Container storage")
                 }
-                IconButton({ showArchived = !showArchived }) {
+                IconButton(vm::toggleShowArchived) {
                     Icon(
                         Icons.Default.Archive,
-                        if (showArchived) "Hide archived sessions" else "Show archived sessions",
+                        if (state.ui.showArchived) "Hide archived sessions"
+                        else "Show archived sessions",
                         tint =
-                            if (showArchived) MaterialTheme.colorScheme.primary
+                            if (state.ui.showArchived) MaterialTheme.colorScheme.primary
                             else LocalContentColor.current,
                     )
                 }
@@ -500,7 +514,7 @@ private fun SessionPane(
         )
         if (searching) {
             OutlinedTextField(
-                state.search,
+                state.ui.search,
                 vm::setSearch,
                 Modifier.fillMaxWidth().padding(horizontal = 12.dp),
                 leadingIcon = { Icon(Icons.Default.Search, null) },
@@ -516,7 +530,7 @@ private fun SessionPane(
                 singleLine = true,
             )
         } else {
-            ChatGptUsageBar(state.chatGptUsage)
+            ChatGptUsageBar(state.harness.resources.chatGptUsage.value)
         }
         Button(
             {
@@ -529,19 +543,19 @@ private fun SessionPane(
             Spacer(Modifier.width(8.dp))
             Text("New session")
         }
-        if (state.connecting) LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (isStateConnecting(state)) LinearProgressIndicator(Modifier.fillMaxWidth())
         LazyColumn(Modifier.weight(1f)) {
-            items(sessions, key = { it.id }) { session ->
-                val draft = state.drafts[session.id]?.takeIf(String::isNotBlank)
-                val unread = state.unreadCounts[session.id] ?: 0
+            items(sessions, key = { it.id.value }) { session ->
+                val draft = sessionUi(state, session.id).draft.takeIf(String::isNotBlank)
+                val unread = state.ui.unreadCounts[session.id] ?: 0
                 val live = session.active || session.sessionState?.running == true
                 val updated = session.updatedAt?.let(::formatSessionUpdate)
-                val read = isSessionRead(session, state.readUpdates[session.id])
+                val read = isSessionViewRead(session, state.ui.readUpdates[session.id])
                 val children = childCounts[session] ?: 0
                 val archived = session.sessionState?.archived == true
                 SessionArchiveSwipeBox(
                     archived = archived,
-                    onArchive = { vm.archiveSession(session.id) },
+                    onArchive = { vm.archiveSession(session.id.value) },
                 ) {
                     ListItem(
                         headlineContent = {
@@ -583,7 +597,7 @@ private fun SessionPane(
                             if (session.active) Badge { Text("LIVE") }
                             else
                                 Icon(
-                                    if (session.id == state.selectedId)
+                                    if (session.id == state.ui.selectedSessionId)
                                         Icons.AutoMirrored.Filled.Chat
                                     else Icons.Default.History,
                                     null,
@@ -627,13 +641,13 @@ private fun SessionPane(
                         },
                         modifier =
                             Modifier.clickable {
-                                vm.showTree(session)
+                                vm.showTree(session.id)
                                 selected()
                             },
                         colors =
                             ListItemDefaults.colors(
                                 containerColor =
-                                    if (session.id == state.selectedId)
+                                    if (session.id == state.ui.selectedSessionId)
                                         MaterialTheme.colorScheme.secondaryContainer
                                     else Color.Transparent
                             ),
@@ -648,7 +662,7 @@ private fun SessionPane(
 private fun TreePane(
     state: ChatUiState,
     vm: ChatViewModel,
-    nodes: List<TreeNode>,
+    nodes: List<SessionViewTreeNode>,
     modifier: Modifier,
 ) {
     Column(modifier) {
@@ -664,15 +678,18 @@ private fun TreePane(
                 }
             },
         )
-        if (state.connecting) LinearProgressIndicator(Modifier.fillMaxWidth())
+        if (isStateConnecting(state)) LinearProgressIndicator(Modifier.fillMaxWidth())
         LazyColumn(Modifier.weight(1f)) {
-            items(nodes, key = { it.session.id }) { (session, depth) ->
-                val draft = state.drafts[session.id]?.takeIf(String::isNotBlank)
-                val unread = state.unreadCounts[session.id] ?: 0
+            items(nodes, key = { it.session.id.value }) { (session, depth) ->
+                val draft = sessionUi(state, session.id).draft.takeIf(String::isNotBlank)
+                val unread = state.ui.unreadCounts[session.id] ?: 0
                 val live = session.active || session.sessionState?.running == true
                 val updated = session.updatedAt?.let(::formatSessionUpdate)
-                val read = isSessionRead(session, state.readUpdates[session.id])
-                val children = remember(state.sessions) { childCount(state.sessions, session.id) }
+                val read = isSessionViewRead(session, state.ui.readUpdates[session.id])
+                val children =
+                    remember(overviewSessions(state)) {
+                        childViewCount(overviewSessions(state), session.id)
+                    }
                 val indent = (depth * 24).dp
                 ListItem(
                     headlineContent = {
@@ -756,11 +773,12 @@ private fun TreePane(
                             }
                         }
                     },
-                    modifier = Modifier.clickable { vm.select(session, selectedFromTree = true) },
+                    modifier =
+                        Modifier.clickable { vm.select(session.id, selectedFromTree = true) },
                     colors =
                         ListItemDefaults.colors(
                             containerColor =
-                                if (session.id == state.selectedId)
+                                if (session.id == state.ui.selectedSessionId)
                                     MaterialTheme.colorScheme.secondaryContainer
                                 else Color.Transparent
                         ),
@@ -777,56 +795,70 @@ private fun ChatPane(
     modifier: Modifier,
     onBack: (() -> Unit)? = null,
 ) {
-    val input = state.selectedId?.let(state.drafts::get).orEmpty()
-    val pendingSecret = state.selectedSecret
-    var showModels by rememberSaveable(state.selectedId) { mutableStateOf(false) }
+    val input = state.ui.selectedSessionId?.let { draftFor(state, it) }.orEmpty()
+    val pendingSecret = selectedSecret(state)
+    var showModels by rememberSaveable(state.ui.selectedSessionId?.value) { mutableStateOf(false) }
     var showWhisperModels by rememberSaveable { mutableStateOf(false) }
-    var showUsageDetails by rememberSaveable(state.selectedId) { mutableStateOf(false) }
-    var fullScreenDetail by remember(state.selectedId) { mutableStateOf<FullScreenDetail?>(null) }
-    var sessionDetail by remember(state.selectedId) { mutableStateOf<SessionDetailPage?>(null) }
-    val selectedSession = state.sessions.firstOrNull { it.id == state.selectedId }
+    var showUsageDetails by
+        rememberSaveable(state.ui.selectedSessionId?.value) { mutableStateOf(false) }
+    var fullScreenDetail by
+        remember(state.ui.selectedSessionId?.value) { mutableStateOf<FullScreenDetail?>(null) }
+    var sessionDetail by
+        remember(state.ui.selectedSessionId?.value) { mutableStateOf<SessionDetailPage?>(null) }
+    val selectedSession =
+        overviewSessions(state).firstOrNull { it.id == state.ui.selectedSessionId }
     val blocks =
-        remember(state.items) { groupTimeline(attachReasoningToToolOperations(state.items)) }
-    val taskList = remember(state.items) { latestHarnessTaskList(state.items) }
+        remember(selectedTimeline(state)) {
+            groupTimeline(attachReasoningToToolOperations(selectedTimeline(state)))
+        }
+    val taskList =
+        remember(selectedTimeline(state)) { latestHarnessTaskList(selectedTimeline(state)) }
     val list = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    val unread = state.selectedId?.let { state.unreadCounts[it] } ?: 0
+    val unread =
+        state.ui.selectedSessionId?.value?.let {
+            state.ui.unreadCounts.mapKeys { it.key.value }[it]
+        } ?: 0
     val selectedLive =
         selectedSession?.active == true || selectedSession?.sessionState?.running == true
-    val selectedUpdatedAt = state.sessions.firstOrNull { it.id == state.selectedId }?.updatedAt
-    var followLatest by remember(state.selectedId) { mutableStateOf(true) }
-    LaunchedEffect(list, state.selectedId) {
+    val selectedUpdatedAt =
+        overviewSessions(state).firstOrNull { it.id == state.ui.selectedSessionId }?.updatedAt
+    var followLatest by remember(state.ui.selectedSessionId?.value) { mutableStateOf(true) }
+    LaunchedEffect(list, state.ui.selectedSessionId?.value) {
         snapshotFlow { list.isScrollInProgress to !list.canScrollForward }
             .distinctUntilChanged()
             .collect { (scrolling, atBottom) ->
                 if (scrolling || atBottom) followLatest = atBottom
-                if (atBottom) state.selectedId?.let(vm::markRead)
+                if (atBottom) state.ui.selectedSessionId?.value?.let(vm::markRead)
             }
     }
     LaunchedEffect(
         blocks.size,
         (blocks.lastOrNull() as? ChatItem.Message)?.text,
-        state.active,
-        state.selectedId,
+        selectedSession(state)?.active == true,
+        state.ui.selectedSessionId?.value,
     ) {
-        if (followLatest && (blocks.isNotEmpty() || state.active)) {
-            list.scrollToItem((blocks.size - 1 + if (state.active) 1 else 0).coerceAtLeast(0))
-            state.selectedId?.let(vm::markRead)
+        if (followLatest && (blocks.isNotEmpty() || selectedSession(state)?.active == true)) {
+            list.scrollToItem(
+                (blocks.size - 1 + if (selectedSession(state)?.active == true) 1 else 0)
+                    .coerceAtLeast(0)
+            )
+            state.ui.selectedSessionId?.value?.let(vm::markRead)
         }
     }
     LaunchedEffect(
         unread,
         followLatest,
-        state.selectedId,
+        state.ui.selectedSessionId?.value,
         selectedUpdatedAt,
-        state.historyLoadedFor,
+        selectedSessionContentComplete(state),
     ) {
         if (
             followLatest &&
-                state.historyLoadedFor == state.selectedId &&
+                selectedSessionContentComplete(state) &&
                 (unread > 0 || selectedUpdatedAt != null)
         ) {
-            state.selectedId?.let(vm::markRead)
+            state.ui.selectedSessionId?.value?.let(vm::markRead)
         }
     }
     BackHandler(enabled = sessionDetail != null) {
@@ -862,8 +894,8 @@ private fun ChatPane(
                             sessionDetail = SessionDetailPage.Overview
                         }
                     ) {
-                        Text(state.title, maxLines = 1)
-                        state.modelCatalog.selected?.let {
+                        Text(selectedSession(state)?.title ?: "Harness Android", maxLines = 1)
+                        selectedModelCatalog(state).selected?.let {
                             Text(
                                 buildString {
                                     append(it.model)
@@ -882,14 +914,14 @@ private fun ChatPane(
                 actions = {
                     IconButton(onClick = { vm.toggleShowReasoning() }) {
                         Icon(
-                            if (state.showReasoning) Icons.Default.Visibility
+                            if (state.ui.showReasoning) Icons.Default.Visibility
                             else Icons.Default.VisibilityOff,
-                            if (state.showReasoning) "Hide reasoning" else "Show reasoning",
+                            if (state.ui.showReasoning) "Hide reasoning" else "Show reasoning",
                         )
                     }
                     IconButton(
                         onClick = { showWhisperModels = true },
-                        enabled = !state.transcribing && !state.voiceRecording,
+                        enabled = !state.ui.transcribing && !state.ui.voiceRecording,
                     ) {
                         Icon(Icons.Default.SettingsVoice, "Local Whisper settings")
                     }
@@ -898,14 +930,16 @@ private fun ChatPane(
                             showModels = true
                             vm.refreshModels()
                         },
-                        enabled = !state.active && !state.connecting,
+                        enabled =
+                            selectedSession(state)?.active != true && !isStateConnecting(state),
                     ) {
                         Icon(Icons.Default.SmartToy, "Choose model")
                     }
-                    if (state.active) IconButton(vm::interrupt) { Icon(Icons.Default.Stop, "Stop") }
+                    if (selectedSession(state)?.active == true)
+                        IconButton(vm::interrupt) { Icon(Icons.Default.Stop, "Stop") }
                 },
             )
-            state.error?.let { error ->
+            state.ui.error?.let { error ->
                 Surface(
                     color = MaterialTheme.colorScheme.errorContainer,
                     contentColor = MaterialTheme.colorScheme.onErrorContainer,
@@ -916,14 +950,14 @@ private fun ChatPane(
                     ) {
                         Column(Modifier.weight(1f)) {
                             Text(error.text)
-                            state.reconnectSeconds?.let { seconds ->
+                            state.ui.reconnectSeconds?.let { seconds ->
                                 Text(
                                     "Next connection attempt in $seconds s",
                                     style = MaterialTheme.typography.labelMedium,
                                 )
                             }
                         }
-                        state.reconnectSeconds?.let {
+                        state.ui.reconnectSeconds?.let {
                             Spacer(Modifier.width(8.dp))
                             Button(onClick = vm::reconnectNow) { Text("Connect now") }
                         }
@@ -940,7 +974,7 @@ private fun ChatPane(
                     itemsIndexed(blocks, key = ::timelineKey) { _, item ->
                         TimelineItem(
                             item = item,
-                            showReasoning = state.showReasoning,
+                            showReasoning = state.ui.showReasoning,
                             onOpenToolDetails = { tool ->
                                 fullScreenDetail = FullScreenDetail.ToolCall(tool)
                             },
@@ -949,7 +983,7 @@ private fun ChatPane(
                             },
                         )
                     }
-                    if (state.active)
+                    if (selectedSession(state)?.active == true)
                         item(key = "working") {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -964,9 +998,11 @@ private fun ChatPane(
                             followLatest = true
                             scope.launch {
                                 list.animateScrollToItem(
-                                    (blocks.size - 1 + if (state.active) 1 else 0).coerceAtLeast(0)
+                                    (blocks.size - 1 +
+                                            if (selectedSession(state)?.active == true) 1 else 0)
+                                        .coerceAtLeast(0)
                                 )
-                                state.selectedId?.let(vm::markRead)
+                                state.ui.selectedSessionId?.value?.let(vm::markRead)
                             }
                         },
                         label = {
@@ -977,50 +1013,54 @@ private fun ChatPane(
                     )
             }
             HorizontalDivider()
-            state.tokenUsage?.let { usage ->
-                ContextUsageBar(usage, onClick = { showUsageDetails = true })
-            }
-            if (state.voiceRecording || state.transcribing) {
+            state.ui.selectedSessionId
+                ?.let { derivedUsageFor(state, it) }
+                ?.let { usage -> ContextUsageBar(usage, onClick = { showUsageDetails = true }) }
+            if (state.ui.voiceRecording || state.ui.transcribing) {
                 Column(
                     Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (state.transcriptionProgress == null)
+                        if (state.ui.transcriptionProgress == null)
                             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                         Spacer(Modifier.width(8.dp))
                         Text(
                             when {
-                                state.voiceRecording -> "Recording voice…"
-                                state.voiceTargetSessionId == state.selectedId ->
-                                    state.transcriptionStatus
+                                state.ui.voiceRecording -> "Recording voice…"
+                                state.ui.voiceTargetSessionId?.value ==
+                                    state.ui.selectedSessionId?.value ->
+                                    state.ui.transcriptionStatus
                                         ?: "Transcribing locally with Whisper…"
                                 else -> "Transcribing voice for another chat…"
                             },
                             Modifier.weight(1f),
                         )
-                        state.transcriptionProgress?.let { progress ->
+                        state.ui.transcriptionProgress?.let { progress ->
                             Text(
                                 "${(progress * 100).toInt()}%",
                                 style = MaterialTheme.typography.labelMedium,
                             )
                         }
                     }
-                    state.transcriptionProgress?.let { progress ->
+                    state.ui.transcriptionProgress?.let { progress ->
                         LinearProgressIndicator(
                             progress = { progress },
                             modifier = Modifier.fillMaxWidth(),
                         )
                     }
-                    state.transcriptionProgressLabel?.let { label ->
+                    state.ui.transcriptionProgressLabel?.let { label ->
                         Text(
                             label,
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    state.transcriptionText
-                        ?.takeIf { state.voiceTargetSessionId == state.selectedId }
+                    state.ui.transcriptionText
+                        ?.takeIf {
+                            state.ui.voiceTargetSessionId?.value ==
+                                state.ui.selectedSessionId?.value
+                        }
                         ?.let { partial ->
                             SelectionContainer {
                                 Text(
@@ -1033,7 +1073,7 @@ private fun ChatPane(
                         }
                 }
             }
-            state.approval?.let { approval ->
+            state.ui.approval?.let { approval ->
                 Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Default.Warning, null, tint = MaterialTheme.colorScheme.error)
@@ -1065,7 +1105,7 @@ private fun ChatPane(
                     }
                 }
             }
-            state.clarify?.let { clarify ->
+            state.ui.clarify?.let { clarify ->
                 Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
@@ -1097,8 +1137,15 @@ private fun ChatPane(
                     }
                 }
             }
-            if (state.selectedQueuedMessages.isNotEmpty()) {
-                QueuedMessagesPanel(state.selectedQueuedMessages)
+            if (
+                selectedSessionId(state)
+                    ?.let { queuedMessagesFor(state, it) }
+                    .orEmpty()
+                    .isNotEmpty()
+            ) {
+                QueuedMessagesPanel(
+                    selectedSessionId(state)?.let { queuedMessagesFor(state, it) }.orEmpty()
+                )
             }
             taskList
                 ?.takeIf { it.inProgress.isNotEmpty() }
@@ -1120,7 +1167,8 @@ private fun ChatPane(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                val secretInput = state.selectedId?.let(state.secretDrafts::get).orEmpty()
+                val secretInput =
+                    state.ui.selectedSessionId?.let { sessionUi(state, it).secretDraft }.orEmpty()
                 Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
                     OutlinedTextField(
                         secretInput,
@@ -1135,13 +1183,15 @@ private fun ChatPane(
                         active = false,
                         enabled =
                             secretInput.isNotEmpty() &&
-                                state.selectedId !in state.uploadingSecretSessionIds,
+                                state.ui.selectedSessionId?.let {
+                                    !sessionUi(state, it).uploadingSecret
+                                } != false,
                         onSend = { vm.sendSecret(secretInput) },
                         onQueue = {},
                     )
                 }
             } else {
-                if (state.active) {
+                if (selectedSession(state)?.active == true) {
                     Text(
                         "Harness is working — choose when to send",
                         Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
@@ -1152,8 +1202,11 @@ private fun ChatPane(
                 Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Bottom) {
                     VoiceButton(
                         vm,
-                        recording = state.voiceRecording,
-                        enabled = !state.transcribing && !state.connecting && !state.active,
+                        recording = state.ui.voiceRecording,
+                        enabled =
+                            !state.ui.transcribing &&
+                                !isStateConnecting(state) &&
+                                selectedSession(state)?.active != true,
                     )
                     OutlinedTextField(
                         input,
@@ -1161,18 +1214,22 @@ private fun ChatPane(
                         Modifier.weight(1f),
                         placeholder = {
                             Text(
-                                state.clarify?.question?.takeIf(String::isNotBlank)
+                                state.ui.clarify?.question?.takeIf(String::isNotBlank)
                                     ?: "Message Harness"
                             )
                         },
                         maxLines = 6,
                     )
                     MessageSendButton(
-                        active = state.active,
+                        active = selectedSession(state)?.active == true,
                         enabled =
-                            input.isNotBlank() && !state.connecting && !state.submittingMessage,
+                            input.isNotBlank() &&
+                                !isStateConnecting(state) &&
+                                !sessionUi(state, selectedSessionId(state) ?: SessionId(""))
+                                    .sending,
                         onSend = {
-                            if (state.clarify != null) vm.answerClarify(input) else vm.send(input)
+                            if (state.ui.clarify != null) vm.answerClarify(input)
+                            else vm.send(input)
                         },
                         onQueue = { vm.send(input, it) },
                     )
@@ -1181,10 +1238,15 @@ private fun ChatPane(
         }
         when (val detail = fullScreenDetail) {
             is FullScreenDetail.Context ->
-                ContextDetailScreen(detail.page, state.tokenUsage) { fullScreenDetail = null }
+                ContextDetailScreen(
+                    detail.page,
+                    state.ui.selectedSessionId?.let { derivedUsageFor(state, it) },
+                ) {
+                    fullScreenDetail = null
+                }
             is FullScreenDetail.ToolCall ->
                 ToolCallScreen(
-                    tool = currentToolForDetail(state.items, detail.tool),
+                    tool = currentToolForDetail(selectedTimeline(state), detail.tool),
                     onDismiss = { fullScreenDetail = null },
                 )
             is FullScreenDetail.SystemPrompt ->
@@ -1201,22 +1263,23 @@ private fun ChatPane(
         when (val detail = sessionDetail) {
             SessionDetailPage.Overview ->
                 selectedSession?.let { session ->
-                    val children = state.childSessions[session.id]
+                    val sessionId = session.id
+                    val children = childrenFor(state, sessionId)
                     SessionDetailScreen(
                         session = session,
-                        eventCount =
-                            state.sessionEvents
-                                .takeIf { state.sessionEventsFor == session.id }
-                                ?.size,
-                        childCount = children?.size,
-                        childError = state.childSessionsErrors[session.id],
-                        containers = state.containers.filter { it.sessionId == session.id },
-                        deletingContainerIds = state.deletingContainerIds,
+                        eventCount = eventDetailsFor(state, sessionId).size,
+                        childCount = if (childrenLoaded(state, sessionId)) children.size else null,
+                        childError = childrenLoadError(state, sessionId),
+                        containers =
+                            state.harness.resources.containers.value.orEmpty().filter {
+                                it.sessionId == session.id.value
+                            },
+                        deletingContainerIds = state.ui.deletingContainerIds,
                         onDeleteContainer = vm::deleteContainer,
-                        onLoadChildren = { vm.loadChildSessions(session.id) },
+                        onLoadChildren = { vm.loadChildSessions(session.id.value) },
                         onOpenChildren = { sessionDetail = SessionDetailPage.Children },
                         onOpenEvents = { sessionDetail = SessionDetailPage.Events },
-                        onArchive = { vm.archiveSession(session.id) },
+                        onArchive = { vm.archiveSession(session.id.value) },
                         onDismiss = { sessionDetail = null },
                     )
                 }
@@ -1224,10 +1287,13 @@ private fun ChatPane(
                 selectedSession?.let { session ->
                     SessionChildrenScreen(
                         session = session,
-                        children = state.childSessions[session.id].orEmpty(),
+                        children = childrenFor(state, session.id),
                         onOpenChild = { child ->
                             sessionDetail = null
-                            vm.select(child, selectedFromTree = state.treeParentId != null)
+                            vm.select(
+                                child.id,
+                                selectedFromTree = state.ui.treeParentSessionId?.value != null,
+                            )
                         },
                         onDismiss = { sessionDetail = SessionDetailPage.Overview },
                     )
@@ -1236,15 +1302,9 @@ private fun ChatPane(
                 selectedSession?.let { session ->
                     SessionEventsScreen(
                         session = session,
-                        events =
-                            state.sessionEvents
-                                .takeIf { state.sessionEventsFor == session.id }
-                                .orEmpty(),
-                        loading = state.sessionEventsLoading,
-                        error =
-                            state.sessionEventsError.takeIf {
-                                state.sessionEventsFor == session.id
-                            },
+                        events = eventDetailsFor(state, session.id),
+                        loading = eventDetailsLoading(state, session.id),
+                        error = eventDetailsError(state, session.id),
                         onLoad = vm::loadSessionEvents,
                         onRetry = { vm.loadSessionEvents(force = true) },
                         onOpenEvent = { sessionDetail = SessionDetailPage.EventPayload(it) },
@@ -1258,8 +1318,8 @@ private fun ChatPane(
     }
     if (showModels) {
         ModelPickerDialog(
-            catalog = state.modelCatalog,
-            loading = state.modelLoading,
+            catalog = selectedModelCatalog(state),
+            loading = state.harness.resources.models.loading,
             onRefresh = vm::refreshModels,
             onConfigure = vm::selectModel,
             onSelect = {
@@ -1271,8 +1331,8 @@ private fun ChatPane(
     }
     if (showWhisperModels) {
         WhisperModelDialog(
-            selected = state.whisperModel,
-            threadCount = state.whisperThreadCount,
+            selected = state.ui.whisperModel,
+            threadCount = state.ui.whisperThreadCount,
             isDownloaded = vm::isWhisperModelDownloaded,
             onSelect = vm::selectWhisperModel,
             onThreadCountSelect = vm::selectWhisperThreadCount,
@@ -1281,7 +1341,7 @@ private fun ChatPane(
     }
     if (showUsageDetails) {
         TokenUsageBottomSheet(
-            usage = state.tokenUsage,
+            usage = state.ui.selectedSessionId?.let { derivedUsageFor(state, it) },
             onOpenDetail = { page ->
                 showUsageDetails = false
                 fullScreenDetail = FullScreenDetail.Context(page)
@@ -1485,7 +1545,7 @@ private sealed interface SessionDetailPage {
 @Composable
 internal fun ContainerStorageScreen(
     containers: List<HarnessContainer>,
-    sessions: List<HarnessSession>,
+    sessions: List<SessionView>,
     loading: Boolean,
     error: ErrorMessage?,
     deletingContainerIds: Set<String>,
@@ -1496,7 +1556,7 @@ internal fun ContainerStorageScreen(
 ) {
     var pendingDeleteId by rememberSaveable { mutableStateOf<String?>(null) }
     val pendingDelete = containers.firstOrNull { it.containerId == pendingDeleteId }
-    val sessionTitles = remember(sessions) { sessions.associate { it.id to it.title } }
+    val sessionTitles = remember(sessions) { sessions.associate { it.id.value to it.title } }
     val groups = remember(containers) { containersBySessionSize(containers) }
     val totalSize = remember(containers) { totalContainerStorageSize(containers) }
     BackHandler(onBack = onDismiss)
@@ -1652,7 +1712,7 @@ internal fun DeleteContainerDialog(
 
 @Composable
 internal fun SessionDetailScreen(
-    session: HarnessSession,
+    session: SessionView,
     eventCount: Int?,
     childCount: Int? = null,
     childError: ErrorMessage? = null,
@@ -1666,7 +1726,7 @@ internal fun SessionDetailScreen(
     onDismiss: () -> Unit,
 ) {
     LaunchedEffect(session.id) { onLoadChildren() }
-    var pendingDeleteId by rememberSaveable(session.id) { mutableStateOf<String?>(null) }
+    var pendingDeleteId by rememberSaveable(session.id.value) { mutableStateOf<String?>(null) }
     val pendingDelete = containers.firstOrNull { it.containerId == pendingDeleteId }
     BackHandler(onBack = onDismiss)
     FullScreenDetailContainer {
@@ -1777,7 +1837,7 @@ internal fun SessionDetailScreen(
                     )
                 }
                 item { HorizontalDivider() }
-                item { SessionProperty("Session ID", session.id) }
+                item { SessionProperty("Session ID", session.id.value) }
                 item {
                     SessionProperty(
                         "Status",
@@ -1811,9 +1871,9 @@ internal fun SessionDetailScreen(
 
 @Composable
 internal fun SessionChildrenScreen(
-    session: HarnessSession,
-    children: List<HarnessSession>,
-    onOpenChild: (HarnessSession) -> Unit,
+    session: SessionView,
+    children: List<SessionView>,
+    onOpenChild: (SessionView) -> Unit,
     onDismiss: () -> Unit,
 ) {
     BackHandler(onBack = onDismiss)
@@ -1827,7 +1887,7 @@ internal fun SessionChildrenScreen(
                 }
             } else {
                 LazyColumn(Modifier.fillMaxSize()) {
-                    items(children, key = { it.id }) { child ->
+                    items(children, key = { it.id.value }) { child ->
                         ListItem(
                             headlineContent = { Text(child.title, maxLines = 1) },
                             supportingContent = {
@@ -1884,7 +1944,7 @@ private fun SessionProperty(label: String, value: String) {
 
 @Composable
 internal fun SessionEventsScreen(
-    session: HarnessSession,
+    session: SessionView,
     events: List<SessionEvent>,
     loading: Boolean,
     error: ErrorMessage?,

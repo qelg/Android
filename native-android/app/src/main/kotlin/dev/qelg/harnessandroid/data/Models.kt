@@ -340,6 +340,8 @@ data class DraftSubmission(
     val sessionId: String,
     val revision: Long,
     val text: String,
+    val submissionId: Long = 0L,
+    val queueMode: MessageQueueMode? = null,
 )
 
 fun canClearDraft(
@@ -356,7 +358,12 @@ fun canClearDraft(
 
 enum class MessageQueueMode(val apiValue: String) {
     AfterNextToolResponse("after_tool"),
-    AfterResponse("after_response"),
+    AfterResponse("after_response");
+
+    companion object {
+        fun fromApiValue(value: String?): MessageQueueMode? =
+            values().firstOrNull { it.apiValue == value }
+    }
 }
 
 enum class ThinkingLevel(val apiValue: String, val displayName: String) {

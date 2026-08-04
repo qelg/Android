@@ -11,4 +11,10 @@ data class GatewayEvent(
     val rawEvent: JsonObject? = null,
     /** Durable resume cursor. Transient events deliberately have no cursor. */
     val cursor: Long? = null,
+    /** Whether this notification is part of durable account history. */
+    val durable: Boolean = cursor != null,
+    /** Event id used to merge a projection with its durable source. */
+    val sourceEventId: Long? = null,
+    /** Canonical server projection attached to a transport notification. */
+    val messageProjection: JsonObject? = null,
 )
