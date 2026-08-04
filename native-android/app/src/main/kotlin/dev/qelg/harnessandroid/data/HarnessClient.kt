@@ -2,6 +2,7 @@ package dev.qelg.harnessandroid.data
 
 import java.io.Closeable
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -37,6 +38,22 @@ class HarnessClient(
     @Volatile private var watcherCall: Call? = null
     @Volatile private var watcherSocket: WebSocket? = null
     private var watcherJob: Job? = null
+    /**
+     * Resume is owned by the state reducer, not by the socket reader. A cursor enters this value
+     * only after every semantic effect of its final translated notification has reduced.
+     */
+    private val acknowledgedCursor = AtomicLong(NO_CURSOR)
+
+    fun acknowledgeCursor(cursor: Long?) {
+        cursor ?: return
+        while (true) {
+            val previous = acknowledgedCursor.get()
+            if (previous >= cursor) return
+            if (acknowledgedCursor.compareAndSet(previous, cursor)) return
+        }
+    }
+
+    private fun acknowledgedCursor(): Long? = acknowledgedCursor.get().takeIf { it != NO_CURSOR }
 
     suspend fun connect() {
         check(!closed) { "Harness client is closed" }
@@ -200,15 +217,16 @@ class HarnessClient(
         text: String,
         model: String? = null,
         queueMode: MessageQueueMode? = null,
-    ) {
-        request(
-            "POST",
-            "/sessions/${sessionId.urlEncode()}/messages",
-            buildJsonObject {
-                put("content", text)
-                queueMode?.let { put("queue_mode", it.apiValue) }
-            },
-        )
+    ): JsonObject {
+        return request(
+                "POST",
+                "/sessions/${sessionId.urlEncode()}/messages",
+                buildJsonObject {
+                    put("content", text)
+                    queueMode?.let { put("queue_mode", it.apiValue) }
+                },
+            )
+            .jsonObject
     }
 
     suspend fun submitSecret(eventId: Long, identifier: String, secret: String) {
@@ -227,17 +245,30 @@ class HarnessClient(
 
     fun watchEvents(sinceId: Long? = null, eventTypes: Set<String> = setOf("*")) {
         stopWatching()
+        acknowledgeCursor(sinceId)
         watcherJob =
             scope.launch(Dispatchers.IO) {
-                var cursor = sinceId
-                var hadConnection = false
+                var hasSubscribed = false
                 while (isActive && !closed) {
                     try {
-                        cursor = streamWebSocket(cursor, eventTypes)
-                        if (!hadConnection) {
-                            eventChannel.send(GatewayEvent("connection.restored", null, emptyMap()))
+                        // Do not use a cursor merely observed by the socket: a disconnect can
+                        // happen after delivery but before the ViewModel has finished reducing it.
+                        streamWebSocket(acknowledgedCursor(), eventTypes) { highWaterCursor ->
+                            if (hasSubscribed)
+                                eventChannel.send(
+                                    GatewayEvent(
+                                        "connection.restored",
+                                        null,
+                                        buildMap {
+                                            highWaterCursor?.let {
+                                                put("cursor", JsonPrimitive(it))
+                                                put("high_water_cursor", JsonPrimitive(it))
+                                            }
+                                        },
+                                    )
+                                )
+                            hasSubscribed = true
                         }
-                        hadConnection = true
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (error: Throwable) {
@@ -320,7 +351,11 @@ class HarnessClient(
         watcherJob = null
     }
 
-    private suspend fun streamWebSocket(sinceId: Long?, eventTypes: Set<String>): Long? =
+    private suspend fun streamWebSocket(
+        sinceId: Long?,
+        eventTypes: Set<String>,
+        onSubscribed: suspend (Long?) -> Unit,
+    ): Long? =
         withContext(Dispatchers.IO) {
             val frames = Channel<String>(Channel.UNLIMITED)
             var failure: Throwable? = null
@@ -368,9 +403,21 @@ class HarnessClient(
                 )
             watcherSocket = socket
             var cursor = sinceId
+            var subscribed = false
             try {
                 for (text in frames) {
                     val frame = json.parseToJsonElement(text).jsonObject
+                    if (frame.string("type") == "subscribed") {
+                        val highWater =
+                            frame["cursor"]?.jsonPrimitive?.longOrNull
+                                ?: frame["high_water_cursor"]?.jsonPrimitive?.longOrNull
+                        highWater?.let { cursor = maxOf(cursor ?: 0L, it) }
+                        if (!subscribed) {
+                            subscribed = true
+                            onSubscribed(highWater)
+                        }
+                        continue
+                    }
                     if (frame.string("type") != "event") continue
                     val event = frame["event"] as? JsonObject ?: continue
                     val eventCursor = frame["cursor"]?.jsonPrimitive?.longOrNull
@@ -381,6 +428,9 @@ class HarnessClient(
                         event.sessionId().orEmpty(),
                         eventCursor,
                         frame["message"] as? JsonObject,
+                        // Frames without an account cursor are transient notifications. They
+                        // must not be retained or used for resume, even when delivered over WS.
+                        durable = eventCursor != null,
                     )
                 }
                 failure?.let { throw it }
@@ -421,7 +471,9 @@ class HarnessClient(
                                 sessionId,
                                 eventId,
                                 event["message"] as? JsonObject,
+                                durable = false,
                             )
+                            // Legacy SSE ids are not account durable cursors.
                             eventId?.let { cursor = maxOf(cursor ?: 0L, it) }
                         }
                         eventName = null
@@ -452,18 +504,52 @@ class HarnessClient(
         sessionId: String,
         cursor: Long? = null,
         message: JsonObject? = null,
+        durable: Boolean,
     ) {
         val payload = eventRecord["payload"] as? JsonObject ?: eventRecord
+        val tags = eventRecord["tags"] as? JsonObject ?: JsonObject(emptyMap())
         val messagePayload = message ?: payload
         val eventSessionId =
             eventRecord.sessionId()?.takeIf(String::isNotBlank)
                 ?: sessionId.takeIf(String::isNotBlank)
+        // Delta and completion frames are often separate shapes. Carry the run/message identity
+        // from the raw payload or tags into both the normalized payload and projection so a
+        // canonical completion removes only its own streaming overlay.
+        fun firstIdentity(vararg names: String): JsonElement? =
+            names.firstNotNullOfOrNull { key ->
+                payload[key] ?: tags[key] ?: eventRecord[key] ?: messagePayload[key]
+            }
+        val identity =
+            buildMap<String, JsonElement> {
+                firstIdentity("run_id", "run")?.let { put("run_id", it) }
+                firstIdentity("message_id", "message")?.let { put("message_id", it) }
+                firstIdentity("sequence", "seq", "delta_sequence")?.let { put("sequence", it) }
+            }
+        fun withIdentity(row: JsonObject?): JsonObject? =
+            row?.let { JsonObject(it + identity.filterKeys { key -> key !in it }) }
         fun values(vararg entries: Pair<String, JsonElement>): Map<String, JsonElement> = buildMap {
             entries.forEach { (key, value) -> put(key, value) }
+            identity.forEach { (key, value) -> putIfAbsent(key, value) }
             eventRecord["created_at_ms"]?.let { put("created_at_ms", it) }
         }
-        suspend fun emit(type: String, payload: Map<String, JsonElement>) {
-            eventChannel.send(GatewayEvent(type, eventSessionId, payload, eventRecord, cursor))
+        suspend fun emit(
+            type: String,
+            payload: Map<String, JsonElement>,
+            finalForFrame: Boolean = true,
+        ) {
+            val acknowledge = durable && finalForFrame
+            eventChannel.send(
+                GatewayEvent(
+                    type = type,
+                    sessionId = eventSessionId,
+                    payload = payload,
+                    rawEvent = eventRecord.takeIf { acknowledge },
+                    cursor = cursor.takeIf { acknowledge },
+                    durable = acknowledge,
+                    sourceEventId = eventRecord["id"]?.jsonPrimitive?.longOrNull,
+                    messageProjection = withIdentity(message).takeIf { acknowledge },
+                )
+            )
         }
         when (name) {
             "llm.delta" ->
@@ -498,26 +584,31 @@ class HarnessClient(
                 )
             "chat.message.assistant.created" -> {
                 val content = messagePayload["content"]
-                if (content.hasFunctionCall()) {
+                if (content.hasFunctionCall())
                     content.reasoningContent()?.let { reasoning ->
                         emit(
                             "message.reasoning",
                             values(
-                                "message_id" to (eventRecord["id"] ?: JsonPrimitive("assistant")),
+                                "message_id" to
+                                    (messagePayload["id"]
+                                        ?: payload["message_id"]
+                                        ?: eventRecord["id"]
+                                        ?: JsonPrimitive("assistant")),
                                 "text" to JsonPrimitive(reasoning.text),
                                 "is_summary" to JsonPrimitive(reasoning.isSummary),
                             ),
+                            finalForFrame = false,
                         )
                     }
-                } else {
-                    emit(
-                        "message.complete",
-                        values(
-                            "text" to JsonPrimitive(content.assistantText()),
-                            "message_id" to (eventRecord["id"] ?: JsonPrimitive("assistant")),
-                        ),
-                    )
-                }
+                // Even a function-call-only assistant message needs a final durable notification:
+                // it is the sole acknowledgement that retains its raw event and projection.
+                emit(
+                    "message.complete",
+                    values(
+                        "text" to JsonPrimitive(content.assistantText()),
+                        "message_id" to (eventRecord["id"] ?: JsonPrimitive("assistant")),
+                    ),
+                )
             }
             "session.state" -> {
                 val tags = eventRecord["tags"] as? JsonObject ?: JsonObject(emptyMap())
@@ -557,6 +648,7 @@ class HarnessClient(
                         "message" to
                             JsonPrimitive(payload.string("error") ?: "Harness LLM run failed")
                     ),
+                    finalForFrame = false,
                 )
                 emit("session.inactive", emptyMap())
             }
@@ -646,6 +738,7 @@ class HarnessClient(
     }
 
     private companion object {
+        const val NO_CURSOR = Long.MIN_VALUE
         const val RECONNECT_DELAY_MS = 1_000L
         val JSON_MEDIA_TYPE = "application/json".toMediaType()
         val SECRET_MEDIA_TYPE = "application/octet-stream".toMediaType()

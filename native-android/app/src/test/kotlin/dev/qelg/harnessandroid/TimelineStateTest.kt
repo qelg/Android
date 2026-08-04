@@ -3,6 +3,7 @@ package dev.qelg.harnessandroid
 import dev.qelg.harnessandroid.data.ChatItem
 import dev.qelg.harnessandroid.data.HarnessSession
 import dev.qelg.harnessandroid.data.HarnessSessionState
+import dev.qelg.harnessandroid.data.SessionId
 import dev.qelg.harnessandroid.data.formatClockTime
 import java.time.Instant
 import java.time.ZoneId
@@ -10,8 +11,10 @@ import java.util.Locale
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
@@ -197,14 +200,24 @@ class TimelineStateTest {
     @Test
     fun runtimeUnreadCountIsRemappedWhenSessionListRefreshes() {
         val sessions = listOf(HarnessSession("stored-1", "Chat", runtimeId = "runtime-1"))
-        assertEquals(mapOf("stored-1" to 2), remapUnread(mapOf("runtime-1" to 2), sessions))
+        assertEquals(
+            mapOf("stored-1" to 2),
+            remapUnread(
+                mapOf("runtime-1" to 2),
+                sessions.map(::sessionDataFromTransport).map(SessionData::toView),
+            ),
+        )
     }
 
     @Test
     fun rememberedRuntimeSessionRoutesUnreadToStoredChat() {
         assertEquals(
             "stored-1",
-            resolveStoredSessionId("runtime-1", mapOf("runtime-1" to "stored-1"), emptyList()),
+            resolveStoredSessionId(
+                "runtime-1",
+                mapOf("runtime-1" to "stored-1"),
+                emptyList<SessionView>(),
+            ),
         )
     }
 
@@ -220,7 +233,13 @@ class TimelineStateTest {
                 ),
                 HarnessSession("done", "Done"),
             )
-        assertEquals(mapOf("done" to 1), remapUnread(mapOf("live" to 1, "done" to 1), sessions))
+        assertEquals(
+            mapOf("done" to 1),
+            remapUnread(
+                mapOf("live" to 1, "done" to 1),
+                sessions.map(::sessionDataFromTransport).map(SessionData::toView),
+            ),
+        )
     }
 
     @Test
@@ -446,32 +465,90 @@ class TimelineStateTest {
 
     @Test
     fun timelinesRemainScopedWhenSwitchingChats() {
-        val firstMessage = ChatItem.Message("user", "first chat")
-        val secondMessage = ChatItem.Message("assistant", "second chat")
-        val first =
-            ChatUiState(selectedId = "one")
-                .withCurrentItems(listOf(firstMessage))
-                .withTimeline("two", listOf(secondMessage))
-
-        assertEquals(listOf(firstMessage), first.items)
-        assertEquals(listOf(firstMessage), first.timelineFor("one"))
-        assertEquals(listOf(secondMessage), first.timelineFor("two"))
-
-        val switched = first.copy(selectedId = "two", items = first.timelineFor("two"))
-        assertEquals(listOf(secondMessage), switched.items)
-        assertEquals(listOf(firstMessage), switched.timelineFor("one"))
+        val first = ChatItem.Message("user", "first chat", id = "1")
+        val second = ChatItem.Message("assistant", "second chat", id = "2")
+        var state = ChatUiState()
+        state =
+            ChatReducer.mergeSessions(
+                state,
+                listOf(HarnessSession("one", "One"), HarnessSession("two", "Two"))
+                    .map(::sessionDataFromTransport),
+            )
+        state = ChatReducer.beginHistory(state, "one", null, 1)
+        state =
+            ChatReducer.completeHistory(
+                state,
+                "one",
+                listOf(
+                    buildJsonObject {
+                        put("id", 1)
+                        put("role", "user")
+                        put("content", "first chat")
+                    }
+                ),
+                1,
+            )
+        state = ChatReducer.beginHistory(state, "two", null, 2)
+        state =
+            ChatReducer.completeHistory(
+                state,
+                "two",
+                listOf(
+                    buildJsonObject {
+                        put("id", 2)
+                        put("role", "assistant")
+                        put("content", "second chat")
+                    }
+                ),
+                2,
+            )
+        assertEquals(listOf(first), sessionTimeline(state, SessionId("one")))
+        assertEquals(listOf(second), sessionTimeline(state, SessionId("two")))
     }
 
     @Test
     fun backgroundTimelineUpdatesDoNotReplaceTheOpenChat() {
-        val openMessage = ChatItem.Message("user", "open")
-        val backgroundMessage = ChatItem.Message("user", "background")
-        val state =
-            ChatUiState(selectedId = "open")
-                .withCurrentItems(listOf(openMessage))
-                .withTimeline("background", listOf(backgroundMessage))
-
-        assertEquals(listOf(openMessage), state.items)
-        assertEquals(listOf(backgroundMessage), state.timelineFor("background"))
+        var state =
+            ChatReducer.mergeSessions(
+                ChatUiState(),
+                listOf(HarnessSession("open", "Open"), HarnessSession("background", "Background"))
+                    .map(::sessionDataFromTransport),
+            )
+        state = ChatReducer.beginHistory(state, "open", null, 1)
+        state =
+            ChatReducer.completeHistory(
+                state,
+                "open",
+                listOf(
+                    buildJsonObject {
+                        put("id", 1)
+                        put("role", "user")
+                        put("content", "open")
+                    }
+                ),
+                1,
+            )
+        state = ChatReducer.beginHistory(state, "background", null, 2)
+        state =
+            ChatReducer.completeHistory(
+                state,
+                "background",
+                listOf(
+                    buildJsonObject {
+                        put("id", 2)
+                        put("role", "user")
+                        put("content", "background")
+                    }
+                ),
+                2,
+            )
+        assertEquals(
+            "open",
+            (sessionTimeline(state, SessionId("open")).single() as ChatItem.Message).text,
+        )
+        assertEquals(
+            "background",
+            (sessionTimeline(state, SessionId("background")).single() as ChatItem.Message).text,
+        )
     }
 }

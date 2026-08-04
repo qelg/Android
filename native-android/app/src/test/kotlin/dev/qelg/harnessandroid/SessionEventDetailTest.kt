@@ -41,14 +41,22 @@ class SessionEventDetailTest {
                     when (page) {
                         "details" ->
                             SessionDetailScreen(
-                                session = HarnessSession("sess_1", "Demo session"),
+                                session =
+                                    sessionDataFromTransport(
+                                            HarnessSession("sess_1", "Demo session")
+                                        )
+                                        .toView(),
                                 eventCount = 1,
                                 onOpenEvents = { page = "events" },
                                 onDismiss = {},
                             )
                         "events" ->
                             SessionEventsScreen(
-                                session = HarnessSession("sess_1", "Demo session"),
+                                session =
+                                    sessionDataFromTransport(
+                                            HarnessSession("sess_1", "Demo session")
+                                        )
+                                        .toView(),
                                 events = listOf(event),
                                 loading = false,
                                 error = null,
@@ -98,7 +106,8 @@ class SessionEventDetailTest {
             activity.setContent {
                 MaterialTheme {
                     SessionEventsScreen(
-                        session = HarnessSession("sess_1", "Demo"),
+                        session =
+                            sessionDataFromTransport(HarnessSession("sess_1", "Demo")).toView(),
                         events = listOf(cause, effect, unresolved),
                         loading = false,
                         error = null,
@@ -121,7 +130,7 @@ class SessionEventDetailTest {
 
     @Test
     fun eventsScreenShowsLoadingEmptyAndErrorStates() {
-        val session = HarnessSession("sess_1", "Demo")
+        val session = sessionDataFromTransport(HarnessSession("sess_1", "Demo")).toView()
         var mode by mutableStateOf("loading")
         composeRule.activityRule.scenario.onActivity { activity ->
             activity.setContent {
@@ -149,11 +158,17 @@ class SessionEventDetailTest {
 
     @Test
     fun archivesFromDetailsAndNavigatesThroughDirectChildren() {
-        val parent = HarnessSession("parent", "Parent session")
+        val parent = sessionDataFromTransport(HarnessSession("parent", "Parent session")).toView()
         val children =
             listOf(
-                HarnessSession("child_1", "First child", parentSessionId = parent.id),
-                HarnessSession("child_2", "Second child", parentSessionId = parent.id),
+                sessionDataFromTransport(
+                        HarnessSession("child_1", "First child", parentSessionId = parent.id.value)
+                    )
+                    .toView(),
+                sessionDataFromTransport(
+                        HarnessSession("child_2", "Second child", parentSessionId = parent.id.value)
+                    )
+                    .toView(),
             )
         var page by mutableStateOf("details")
         var archiveRequested = false
@@ -175,7 +190,7 @@ class SessionEventDetailTest {
                         SessionChildrenScreen(
                             session = parent,
                             children = children,
-                            onOpenChild = { openedChild = it.id },
+                            onOpenChild = { openedChild = it.id.value },
                             onDismiss = { page = "details" },
                         )
                     }

@@ -3,6 +3,7 @@ package dev.qelg.harnessandroid
 import dev.qelg.harnessandroid.data.HarnessSession
 import dev.qelg.harnessandroid.data.HarnessSessionState
 import dev.qelg.harnessandroid.data.HarnessTask
+import dev.qelg.harnessandroid.data.SessionId
 import dev.qelg.harnessandroid.data.applySessionStates
 import dev.qelg.harnessandroid.data.filterArchivedSessions
 import dev.qelg.harnessandroid.data.formatSessionState
@@ -77,13 +78,19 @@ class SessionStateTest {
     @Test
     fun runningStateClearsLocalUnreadCount() {
         val initial =
-            ChatUiState(
-                selectedId = "session",
-                sessions = listOf(HarnessSession("session", "Session")),
-                unreadCounts = mapOf("session" to 1),
+            ChatReducer.mergeSession(
+                ChatUiState(
+                    ui =
+                        LocalUiState(
+                            selectedSessionId = SessionId("session"),
+                            unreadCounts = mapOf(SessionId("session") to 1),
+                        )
+                ),
+                sessionDataFromTransport(HarnessSession("session", "Session")),
+                null,
             )
         val running = initial.withSessionState(HarnessSessionState("session", "running"))
-        assertEquals(emptyMap<String, Int>(), running.unreadCounts)
+        assertEquals(emptyMap<SessionId, Int>(), running.ui.unreadCounts)
     }
 
     @Test
@@ -148,44 +155,43 @@ class SessionStateTest {
     @Test
     fun liveSessionStateIsPerSessionAndSelectedActivityIsDerived() {
         val initial =
-            ChatUiState(
-                selectedId = "first",
-                sessions =
-                    listOf(HarnessSession("first", "First"), HarnessSession("second", "Second")),
+            ChatReducer.mergeSessions(
+                ChatUiState(ui = LocalUiState(selectedSessionId = SessionId("first"))),
+                listOf(HarnessSession("first", "First"), HarnessSession("second", "Second"))
+                    .map(::sessionDataFromTransport),
             )
-
         val secondRunning =
             initial.withSessionState(HarnessSessionState("second", "running", eventId = 10))
-        assertFalse(secondRunning.active)
-        assertEquals(setOf("second"), secondRunning.activeSessionIds)
-
-        val selectedRunning = secondRunning.copy(selectedId = "second")
-        assertTrue(selectedRunning.active)
-
+        assertFalse(selectedSession(secondRunning)?.active == true)
+        assertTrue(
+            secondRunning.harness.sessionsById[SessionId("second")]?.state?.value?.running == true
+        )
+        val selectedRunning =
+            secondRunning.copy(ui = secondRunning.ui.copy(selectedSessionId = SessionId("second")))
+        assertTrue(selectedSession(selectedRunning)?.active == true)
         val secondFinished =
             selectedRunning.withSessionState(
                 HarnessSessionState("second", "finished", read = "unread", eventId = 11)
             )
-        assertFalse(secondFinished.active)
-        assertTrue(secondFinished.sessions.single { it.id == "second" }.sessionState!!.finished)
+        assertFalse(selectedSession(secondFinished)?.active == true)
+        assertTrue(selectedSession(secondFinished)?.sessionState?.finished == true)
     }
 
     @Test
     fun olderLiveSessionStateCannotReplaceNewerState() {
         val finished =
-            ChatUiState(
-                    selectedId = "session",
-                    sessions = listOf(HarnessSession("session", "Session")),
+            ChatReducer.mergeSession(
+                    ChatUiState(),
+                    sessionDataFromTransport(HarnessSession("session", "Session")),
+                    null,
                 )
                 .withSessionState(
                     HarnessSessionState("session", "finished", read = "unread", eventId = 12)
                 )
-
         val staleRunning =
             finished.withSessionState(HarnessSessionState("session", "running", eventId = 11))
-
         assertEquals(finished, staleRunning)
-        assertFalse(staleRunning.active)
+        assertFalse(selectedSession(staleRunning)?.active == true)
     }
 
     @Test

@@ -247,7 +247,10 @@ class ModelsTest {
         assertEquals(0.4, session.actualCostUsd!!, 0.0)
         assertEquals(2, session.apiCallCount)
         assertEquals(430L, session.cumulativeTokenUsage?.totalTokens)
-        assertEquals(430L, initialTokenUsage(session)?.cumulative?.totalTokens)
+        assertEquals(
+            430L,
+            sessionDataFromTransport(session).summary.value.cumulativeTokenUsage?.totalTokens,
+        )
     }
 
     @Test

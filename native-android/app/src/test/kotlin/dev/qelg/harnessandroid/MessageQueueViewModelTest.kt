@@ -2,14 +2,11 @@ package dev.qelg.harnessandroid
 
 import android.os.Looper
 import androidx.lifecycle.SavedStateHandle
-import dev.qelg.harnessandroid.data.ChatItem
-import dev.qelg.harnessandroid.data.HarnessSession
-import dev.qelg.harnessandroid.data.MessageQueueMode
+import dev.qelg.harnessandroid.data.*
 import kotlinx.coroutines.CompletableDeferred
-import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -22,145 +19,235 @@ import org.robolectric.annotation.Config
 class MessageQueueViewModelTest {
     @Test
     fun activeSessionQueuesWithoutInsertingMessageIntoRunningTimeline() {
-        val submissions = mutableListOf<Submission>()
-        val submitted = CompletableDeferred<Unit>()
-        val viewModel =
-            viewModel(active = true) { sessionId, text, model, queueMode ->
-                submissions += Submission(sessionId, text, model, queueMode)
-                submitted.await()
+        val submitted = CompletableDeferred<kotlinx.serialization.json.JsonObject>()
+        val viewModel = viewModel(true) { _, _, _, _ -> submitted.await() }
+        viewModel.setDraft(" follow up ")
+        viewModel.send(" follow up ", MessageQueueMode.AfterResponse)
+        assertTrue(selectedTimeline(viewModel.state.value).isEmpty())
+        assertTrue(sessionUi(viewModel.state.value, SessionId("session-1")).sending)
+        submitted.complete(
+            buildJsonObject {
+                put("id", 1)
+                put("event_name", "queued.message")
+                put("queue_mode", "after_response")
+                put("content", "follow up")
             }
-        viewModel.setDraft("  follow up  ")
-
-        viewModel.send("  follow up  ", MessageQueueMode.AfterResponse)
-
-        val submitting = viewModel.state.value
-        assertTrue(submitting.active)
-        assertTrue(submitting.items.isEmpty())
-        assertEquals("follow up", submitting.selectedQueuedMessages.single().text)
-        assertTrue(submitting.selectedQueuedMessages.single().submitting)
-
-        submitted.complete(Unit)
-        idleMainLooper()
-
-        assertEquals(
-            listOf(Submission("session-1", "follow up", null, MessageQueueMode.AfterResponse)),
-            submissions,
         )
-        assertFalse(viewModel.state.value.selectedQueuedMessages.single().submitting)
-        assertNull(viewModel.state.value.drafts["session-1"])
+        idle()
+        assertEquals(
+            listOf("follow up"),
+            queuedMessagesFor(viewModel.state.value, SessionId("session-1")).map { it.text },
+        )
+        assertFalse(sessionUi(viewModel.state.value, SessionId("session-1")).sending)
     }
 
     @Test
     fun inactiveSessionSendsImmediatelyWithoutQueueMode() {
-        val submissions = mutableListOf<Submission>()
         val viewModel =
-            viewModel(active = false) { sessionId, text, model, queueMode ->
-                submissions += Submission(sessionId, text, model, queueMode)
+            viewModel(false) { _, text, _, _ ->
+                buildJsonObject {
+                    put("id", 2)
+                    put("event_name", "chat.message.user.created")
+                    put("role", "user")
+                    put("content", text)
+                }
             }
         viewModel.setDraft("start now")
-
         viewModel.send("start now")
+        idle()
+        assertEquals("", sessionUi(viewModel.state.value, SessionId("session-1")).draft)
+        assertTrue(selectedTimeline(viewModel.state.value).isNotEmpty())
+    }
 
-        val sending = viewModel.state.value
-        assertTrue(sending.active)
-        assertTrue(sending.selectedQueuedMessages.isEmpty())
-        assertEquals("start now", (sending.items.single() as ChatItem.Message).text)
-        idleMainLooper()
-        assertEquals(listOf(Submission("session-1", "start now", null, null)), submissions)
+    @Test
+    fun direct_acknowledgement_fence_rejects_a_second_send_before_running_state() {
+        var calls = 0
+        val viewModel =
+            viewModel(false) { _, text, _, _ ->
+                calls += 1
+                buildJsonObject {
+                    put("id", calls)
+                    put("event_name", "chat.message.user.created")
+                    put("role", "user")
+                    put("content", text)
+                }
+            }
+        viewModel.setDraft("first")
+        viewModel.send("first")
+        idle()
+        assertTrue(sessionUi(viewModel.state.value, SessionId("session-1")).awaitingRunStart)
+        viewModel.setDraft("second")
+        viewModel.send("second")
+        idle()
+        assertEquals(1, calls)
+    }
+
+    @Test
+    fun websocket_user_ack_clears_persisted_draft_before_in_memory_submission_is_reduced() {
+        val post = CompletableDeferred<kotlinx.serialization.json.JsonObject>()
+        val application = RuntimeEnvironment.getApplication()
+        val viewModel = viewModel(false) { _, _, _, _ -> post.await() }
+        viewModel.setDraft("ack me")
+        viewModel.send("ack me")
+        assertTrue(sessionUi(viewModel.state.value, SessionId("session-1")).sending)
+        assertEquals("ack me", DraftStore(application).load("")["session-1"])
+
+        val method =
+            ChatViewModel::class.java.getDeclaredMethod("handleTransport", GatewayEvent::class.java)
+        method.isAccessible = true
+        method.invoke(
+            viewModel,
+            GatewayEvent(
+                type = "message.user",
+                sessionId = "session-1",
+                payload = buildJsonObject { put("text", "ack me") },
+                cursor = 10,
+                durable = true,
+                sourceEventId = 10,
+                messageProjection =
+                    buildJsonObject {
+                        put("id", 10)
+                        put("role", "user")
+                        put("content", "ack me")
+                    },
+            ),
+        )
+
+        assertEquals("", sessionUi(viewModel.state.value, SessionId("session-1")).draft)
+        assertTrue(sessionUi(viewModel.state.value, SessionId("session-1")).sending)
+        assertTrue(sessionUi(viewModel.state.value, SessionId("session-1")).awaitingRunStart)
+        assertFalse(DraftStore(application).load("").containsKey("session-1"))
+
+        // The later HTTP success sees an already-acknowledged submission and is idempotent.
+        post.complete(buildJsonObject { put("id", 10) })
+        idle()
+        assertTrue(sessionUi(viewModel.state.value, SessionId("session-1")).sending)
+        assertFalse(DraftStore(application).load("").containsKey("session-1"))
+    }
+
+    @Test
+    fun replayed_durable_completion_does_not_increment_background_unread_twice() {
+        val application = RuntimeEnvironment.getApplication()
+        val background = SessionId("background")
+        val selected = SessionId("selected")
+        val state =
+            ChatReducer.mergeSessions(
+                ChatUiState(ui = LocalUiState(configured = true, selectedSessionId = selected)),
+                listOf(
+                    sessionDataFromTransport(HarnessSession(background.value, "Background")),
+                    sessionDataFromTransport(HarnessSession(selected.value, "Selected")),
+                ),
+            )
+        val viewModel =
+            ChatViewModel(application, SavedStateHandle(), state) { _, _, _, _ ->
+                buildJsonObject {}
+            }
+        val method =
+            ChatViewModel::class.java.getDeclaredMethod("handleTransport", GatewayEvent::class.java)
+        method.isAccessible = true
+        val completion =
+            GatewayEvent(
+                type = "message.complete",
+                sessionId = background.value,
+                payload = emptyMap(),
+                rawEvent = buildJsonObject { put("id", 10) },
+                cursor = 10,
+                durable = true,
+                sourceEventId = 10,
+                messageProjection =
+                    buildJsonObject {
+                        put("id", 10)
+                        put("role", "assistant")
+                        put("content", "done")
+                    },
+            )
+        method.invoke(viewModel, completion)
+        method.invoke(viewModel, completion)
+        assertEquals(1, viewModel.state.value.ui.unreadCounts[background])
     }
 
     @Test
     fun failedQueueSubmissionKeepsDraftAndRemovesQueueIndicator() {
-        val viewModel = viewModel(active = true) { _, _, _, _ -> error("queue rejected") }
+        val viewModel = viewModel(true) { _, _, _, _ -> error("queue rejected") }
         viewModel.setDraft("try later")
-
         viewModel.send("try later", MessageQueueMode.AfterNextToolResponse)
-        idleMainLooper()
-
-        val failed = viewModel.state.value
-        assertTrue(failed.active)
-        assertTrue(failed.selectedQueuedMessages.isEmpty())
-        assertEquals("try later", failed.drafts["session-1"])
-        assertEquals("queue rejected", failed.error?.text)
+        idle()
+        assertTrue(queuedMessagesFor(viewModel.state.value, SessionId("session-1")).isEmpty())
+        assertEquals("try later", sessionUi(viewModel.state.value, SessionId("session-1")).draft)
+        assertEquals("queue rejected", viewModel.state.value.ui.error?.text)
     }
 
     @Test
-    fun historyReconciliationRemovesOnlyQueueEntriesThatWereReleased() {
-        val queued =
-            ChatUiState(
-                queuedMessages =
-                    mapOf(
-                        "session-1" to
-                            listOf(
-                                QueuedMessage(
-                                    1,
-                                    "repeat",
-                                    MessageQueueMode.AfterResponse,
-                                    expectedUserMessageOccurrence = 2,
-                                    submitting = false,
-                                ),
-                                QueuedMessage(
-                                    2,
-                                    "repeat",
-                                    MessageQueueMode.AfterResponse,
-                                    expectedUserMessageOccurrence = 3,
-                                    submitting = false,
-                                ),
-                            )
-                    )
+    fun historyReconciliationUsesCanonicalQueueProjection() {
+        var state =
+            ChatReducer.mergeSession(
+                ChatUiState(),
+                sessionDataFromTransport(HarnessSession("session-1", "Test")),
+                null,
             )
-        val history =
-            listOf(
-                ChatItem.Message("user", "repeat"),
-                ChatItem.Message("assistant", "done"),
-                ChatItem.Message("user", "repeat"),
+        state = ChatReducer.beginHistory(state, "session-1", null, 1)
+        state =
+            ChatReducer.completeHistory(
+                state,
+                "session-1",
+                listOf(
+                    buildJsonObject {
+                        put("id", 2)
+                        put("event_name", "queued.message")
+                        put("queue_mode", "after_response")
+                        put("content", "repeat")
+                    }
+                ),
+                1,
             )
+        assertEquals(listOf(2L), queuedMessagesFor(state, SessionId("session-1")).map { it.id })
+    }
 
-        val reconciled = queued.reconcileQueuedMessages("session-1", history)
-
-        assertEquals(listOf(2L), reconciled.queuedMessages["session-1"]?.map { it.id })
+    @Test
+    fun voice_target_uses_session_runtime_id_when_available() {
+        val application = RuntimeEnvironment.getApplication()
+        val id = SessionId("stored")
+        val state =
+            ChatReducer.mergeSession(
+                ChatUiState(ui = LocalUiState(configured = true, selectedSessionId = id)),
+                sessionDataFromTransport(HarnessSession("stored", "Test", runtimeId = "runtime")),
+                null,
+            )
+        val viewModel =
+            ChatViewModel(application, SavedStateHandle(), state) { _, _, _, _ ->
+                buildJsonObject {}
+            }
+        assertEquals("stored", viewModel.currentVoiceMessageTarget()?.storedSessionId)
+        assertEquals("runtime", viewModel.currentVoiceMessageTarget()?.runtimeSessionId)
     }
 
     @Test
     fun activeSessionRequiresAnExplicitQueueChoice() {
-        var submitted = false
-        val viewModel = viewModel(active = true) { _, _, _, _ -> submitted = true }
+        var called = false
+        val viewModel =
+            viewModel(true) { _, _, _, _ ->
+                called = true
+                buildJsonObject {}
+            }
         viewModel.setDraft("do not guess")
-
         viewModel.send("do not guess")
-        idleMainLooper()
-
-        assertFalse(submitted)
-        assertEquals("do not guess", viewModel.state.value.drafts["session-1"])
-        assertTrue(viewModel.state.value.selectedQueuedMessages.isEmpty())
+        idle()
+        assertFalse(called)
+        assertEquals("do not guess", sessionUi(viewModel.state.value, SessionId("session-1")).draft)
     }
 
     private fun viewModel(active: Boolean, submitter: MessageSubmitter): ChatViewModel {
         val application = RuntimeEnvironment.getApplication()
-        application.getSharedPreferences("chat_drafts", 0).edit().clear().commit()
         val session = HarnessSession("session-1", "Test", active = active)
-        return ChatViewModel(
-            application,
-            SavedStateHandle(),
-            ChatUiState(
-                configured = true,
-                selectedId = session.id,
-                sessions = listOf(session),
-                activeSessionIds = if (active) setOf(session.id) else emptySet(),
-                title = session.title,
-            ),
-            submitter,
-        )
+        val id = SessionId(session.id)
+        val state =
+            ChatReducer.mergeSession(
+                ChatUiState(ui = LocalUiState(configured = true, selectedSessionId = id)),
+                sessionDataFromTransport(session),
+                null,
+            )
+        return ChatViewModel(application, SavedStateHandle(), state, submitter)
     }
 
-    private fun idleMainLooper() {
-        shadowOf(Looper.getMainLooper()).idle()
-    }
-
-    private data class Submission(
-        val sessionId: String,
-        val text: String,
-        val model: String?,
-        val queueMode: MessageQueueMode?,
-    )
+    private fun idle() = shadowOf(Looper.getMainLooper()).idle()
 }

@@ -343,6 +343,48 @@ class HarnessClientTest {
     }
 
     @Test
+    fun websocket_frame_without_cursor_is_transient_and_keeps_delta_identity() = runBlocking {
+        val response =
+            MockResponse()
+                .withWebSocketUpgrade(
+                    object : WebSocketListener() {
+                        override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
+                            webSocket.send(
+                                """{"type":"event","event":{"id":41,"name":"llm.delta","session_id":"sess_1","tags":{"session":"sess_1","run":"run-1","sequence":3},"payload":{"delta":"Hel"}}}"""
+                            )
+                            webSocket.send(
+                                """{"type":"event","cursor":42,"event":{"id":42,"name":"chat.message.assistant.created","session_id":"sess_1","tags":{"session":"sess_1","run":"run-1","sequence":4},"payload":{"content":"Hello"}},"message":{"id":"message-1","role":"assistant","content":"Hello"}}"""
+                            )
+                            webSocket.close(1000, "done")
+                        }
+                    }
+                )
+        server(response) { client, _ ->
+            val received = async {
+                client.events
+                    .filter { it.type == "message.delta" || it.type == "message.complete" }
+                    .take(2)
+                    .toList()
+            }
+            client.watchEvents()
+            val events = withTimeout(5_000) { received.await() }
+            val delta = events[0]
+            val completion = events[1]
+            assertFalse(delta.durable)
+            assertNull(delta.cursor)
+            assertNull(delta.rawEvent)
+            assertEquals("run-1", delta.payload["run_id"]?.jsonPrimitive?.content)
+            assertEquals(3, delta.payload["sequence"]?.jsonPrimitive?.intOrNull)
+            assertTrue(completion.durable)
+            assertEquals(
+                "run-1",
+                completion.messageProjection?.get("run_id")?.jsonPrimitive?.content,
+            )
+            assertEquals(4, completion.messageProjection?.get("sequence")?.jsonPrimitive?.intOrNull)
+        }
+    }
+
+    @Test
     fun forwardsWebSocketSessionRenameEvents() = runBlocking {
         val response =
             MockResponse()
@@ -432,24 +474,66 @@ class HarnessClientTest {
         server(MockResponse().setHeader("Content-Type", "text/event-stream").setBody(body)) {
             client,
             _ ->
-            val collected = async { client.events.take(4).toList() }
+            val collected = async { client.events.take(5).toList() }
             client.watchSession("sess_1")
             val events = withTimeout(5_000) { collected.await() }
             assertEquals(
-                listOf("message.reasoning", "tool.start", "tool.complete", "message.complete"),
+                listOf(
+                    "message.reasoning",
+                    "message.complete",
+                    "tool.start",
+                    "tool.complete",
+                    "message.complete",
+                ),
                 events.map { it.type },
             )
-            assertEquals("podman-shell", events[1].payload["name"]?.jsonPrimitive?.content)
+            assertEquals("podman-shell", events[2].payload["name"]?.jsonPrimitive?.content)
             assertEquals(
                 "pwd",
-                events[1].payload["arguments"]?.jsonObject?.get("cmd")?.jsonPrimitive?.content,
+                events[2].payload["arguments"]?.jsonObject?.get("cmd")?.jsonPrimitive?.content,
             )
             assertEquals(
                 "The directory is /work.",
-                events[3].payload["text"]?.jsonPrimitive?.content,
+                events[4].payload["text"]?.jsonPrimitive?.content,
             )
         }
     }
+
+    @Test
+    fun final_notification_alone_carries_durable_frame_and_function_calls_still_finish() =
+        runBlocking {
+            val response =
+                MockResponse()
+                    .withWebSocketUpgrade(
+                        object : WebSocketListener() {
+                            override fun onOpen(webSocket: WebSocket, response: okhttp3.Response) {
+                                webSocket.send(
+                                    """{"type":"event","cursor":8,"event":{"id":8,"name":"llm.run.failed","session_id":"sess_1","payload":{"error":"nope"}}}"""
+                                )
+                                webSocket.send(
+                                    """{"type":"event","cursor":9,"event":{"id":9,"name":"chat.message.assistant.created","session_id":"sess_1","payload":{"content":[{"type":"function_call","name":"terminal"}]}},"message":{"id":9,"role":"assistant","content":[{"type":"function_call","name":"terminal"}]}}"""
+                                )
+                            }
+                        }
+                    )
+            server(response) { client, _ ->
+                val received = async { client.events.take(3).toList() }
+                client.watchEvents()
+                val events = withTimeout(5_000) { received.await() }
+                assertEquals(
+                    listOf("error", "session.inactive", "message.complete"),
+                    events.map { it.type },
+                )
+                assertFalse(events[0].durable)
+                assertNull(events[0].cursor)
+                assertNull(events[0].rawEvent)
+                assertTrue(events[1].durable)
+                assertEquals(8L, events[1].cursor)
+                assertTrue(events[2].durable)
+                assertEquals(9L, events[2].cursor)
+                assertNotNull(events[2].messageProjection)
+            }
+        }
 
     private suspend fun server(
         vararg responses: MockResponse,
