@@ -1,5 +1,7 @@
 package dev.qelg.harnessandroid
 
+import dev.qelg.harnessandroid.data.ChatItem
+import dev.qelg.harnessandroid.data.GatewayEvent
 import dev.qelg.harnessandroid.data.SessionId
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -532,6 +534,92 @@ class ChatStateShapeTest {
             setOf(EventId(9)),
             sessionContent(state.harness.sessionsById[id])!!.rawEventsById.keys,
         )
+    }
+
+    @Test
+    fun post_acknowledgement_and_durable_echo_share_one_message_projection() {
+        val id = SessionId("session")
+        val projection = buildJsonObject {
+            put("id", "13:17:42.123")
+            put("role", "user")
+            put("content", "hello")
+        }
+        val submission =
+            dev.qelg.harnessandroid.data.DraftSubmission("", 1, id.value, 0, "hello", 1)
+        var state =
+            ChatReducer.mergeSession(
+                ChatUiState(
+                    ui =
+                        LocalUiState(
+                            sessionUi = mapOf(id to SessionUiState(submission = submission))
+                        )
+                ),
+                sessionDataFromTransport(
+                    dev.qelg.harnessandroid.data.HarnessSession(id.value, "Session")
+                ),
+                null,
+            )
+        state = ChatReducer.acknowledgeSubmission(state, id.value, submission, projection)
+        state =
+            ChatReducer.mergeTransport(
+                state,
+                GatewayEvent(
+                    type = "message.user",
+                    sessionId = id.value,
+                    payload = mapOf("text" to kotlinx.serialization.json.JsonPrimitive("hello")),
+                    cursor = 42,
+                    durable = true,
+                    sourceEventId = 42,
+                    messageProjection = projection,
+                ),
+            )
+
+        val timeline = sessionTimeline(state, id)
+        assertEquals(1, timeline.size)
+        assertEquals(1, timeline.mapIndexed(::timelineKey).toSet().size)
+        assertEquals("hello", (timeline.single() as ChatItem.Message).text)
+    }
+
+    @Test
+    fun transient_message_echo_is_removed_when_post_acknowledgement_arrives() {
+        val id = SessionId("session")
+        val projection = buildJsonObject {
+            put("id", "13:17:42.123")
+            put("role", "user")
+            put("content", "hello")
+        }
+        val submission =
+            dev.qelg.harnessandroid.data.DraftSubmission("", 1, id.value, 0, "hello", 1)
+        var state =
+            ChatReducer.mergeSession(
+                ChatUiState(
+                    ui =
+                        LocalUiState(
+                            sessionUi = mapOf(id to SessionUiState(submission = submission))
+                        )
+                ),
+                sessionDataFromTransport(
+                    dev.qelg.harnessandroid.data.HarnessSession(id.value, "Session")
+                ),
+                null,
+            )
+        state =
+            ChatReducer.mergeTransport(
+                state,
+                GatewayEvent(
+                    type = "message.user",
+                    sessionId = id.value,
+                    payload = mapOf("text" to kotlinx.serialization.json.JsonPrimitive("hello")),
+                    durable = false,
+                    messageProjection = projection,
+                ),
+            )
+        state = ChatReducer.acknowledgeSubmission(state, id.value, submission, projection)
+
+        val timeline = sessionTimeline(state, id)
+        assertEquals(1, timeline.size)
+        assertEquals(1, timeline.mapIndexed(::timelineKey).toSet().size)
+        assertEquals("hello", (timeline.single() as ChatItem.Message).text)
     }
 
     @Test

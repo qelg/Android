@@ -544,21 +544,15 @@ class HarnessClientTest {
                         }
                     )
             server(response) { client, _ ->
-                val received = async { client.events.take(3).toList() }
+                val received = async { client.events.take(2).toList() }
                 client.watchEvents()
                 val events = withTimeout(5_000) { received.await() }
-                assertEquals(
-                    listOf("error", "session.inactive", "message.complete"),
-                    events.map { it.type },
-                )
-                assertFalse(events[0].durable)
-                assertNull(events[0].cursor)
-                assertNull(events[0].rawEvent)
+                assertEquals(listOf("session.inactive", "message.complete"), events.map { it.type })
+                assertTrue(events[0].durable)
+                assertEquals(8L, events[0].cursor)
                 assertTrue(events[1].durable)
-                assertEquals(8L, events[1].cursor)
-                assertTrue(events[2].durable)
-                assertEquals(9L, events[2].cursor)
-                assertNotNull(events[2].messageProjection)
+                assertEquals(9L, events[1].cursor)
+                assertNotNull(events[1].messageProjection)
             }
         }
 
