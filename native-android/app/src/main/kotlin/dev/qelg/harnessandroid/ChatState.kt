@@ -253,6 +253,18 @@ fun unresolvedSessionData(id: SessionId, observed: EventId?): SessionData =
         state = SynchronizedData.Complete(null),
     )
 
+/**
+ * A container proves that a session can be opened, but not that it is a root session. Keep it
+ * unresolved until a snapshot or child response supplies parent authority while allocating content
+ * so opening it can hydrate both history resources.
+ */
+fun sessionDataFromContainer(container: HarnessContainer): SessionData =
+    unresolvedSessionData(SessionId(container.sessionId), null)
+        .copy(
+            name = ObservedValue(containerSessionTitle(container), null),
+            content = SynchronizedData.Complete(SessionContent()),
+        )
+
 fun HarnessSession.toSummary() =
     SessionSummary(
         updatedAt,
@@ -515,6 +527,28 @@ fun derivedUsageFor(state: ChatUiState, id: SessionId): TokenUsageState? {
 
 /** Pure server merge operations; HTTP and websocket arrivals use the same normalized records. */
 object ChatReducer {
+    /** Merge container evidence without promoting an unknown child to an authoritative root. */
+    fun mergeContainerSession(state: ChatUiState, container: HarnessContainer): ChatUiState {
+        val candidate = sessionDataFromContainer(container)
+        val old =
+            state.harness.sessionsById[candidate.id] ?: return mergeSession(state, candidate, null)
+        val merged =
+            old.copy(
+                // Container metadata is a title fallback only; it must never overwrite server
+                // authority already present in a snapshot, child response, or durable event.
+                name =
+                    if (old.name.value.isBlank()) old.name.copy(value = candidate.name.value)
+                    else old.name,
+                content = old.content ?: candidate.content,
+            )
+        return state.copy(
+            harness =
+                state.harness.copy(
+                    sessionsById = state.harness.sessionsById + (candidate.id to merged)
+                )
+        )
+    }
+
     /**
      * A snapshot versions its summary fields, but is never a durable-event acknowledgement.
      * Refreshes can overlap a socket frame that is below the snapshot cursor and that frame must

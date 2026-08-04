@@ -151,6 +151,8 @@ private constructor(
     private var connectionVersion = 0L
     private var selectionGeneration = 0L
     private var appStarted = false
+    /** True after /events has conclusively rejected websocket upgrades for this connection. */
+    private var eventsEndpointUnsupported = false
     private val credentials = SecureCredentials(application)
     private val draftStore = DraftStore(application)
     private val readStateStore = ReadStateStore(application)
@@ -193,8 +195,10 @@ private constructor(
 
     fun onAppStarted() {
         appStarted = true
-        if (state.value.harness.connection is ConnectionState.Connected)
-            client?.watchEvents(overviewCursor)
+        if (state.value.harness.connection is ConnectionState.Connected) {
+            if (eventsEndpointUnsupported) watchSelectedSessionFallback()
+            else client?.watchEvents(overviewCursor)
+        }
     }
 
     fun onAppStopped() {
@@ -257,6 +261,7 @@ private constructor(
             )
         }
         val api = client ?: return
+        if (eventsEndpointUnsupported) watchSelectedSessionFallback()
         refreshModels()
         // These calls deliberately have independent completion paths. A usable message timeline
         // must not wait for /events, while the shared generation barrier stays pending until both
@@ -323,9 +328,8 @@ private constructor(
     }
 
     fun selectContainerSession(container: HarnessContainer) {
-        val id = SessionId(container.sessionId)
-        if (state.value.harness.sessionsById.containsKey(id)) select(id)
-        else reportError(IllegalStateException("Container session is not in the current snapshot"))
+        _state.update { ChatReducer.mergeContainerSession(it, container) }
+        select(SessionId(container.sessionId))
     }
 
     fun connect(config: ConnectionConfig) {
@@ -348,6 +352,7 @@ private constructor(
         val drafts = draftStore.load(draftNamespace)
         val reads = readStateStore.load(draftNamespace)
         overviewCursor = 0L
+        eventsEndpointUnsupported = false
         _state.update { current ->
             current.copy(
                 ui =
@@ -1639,6 +1644,19 @@ private constructor(
     private fun handleTransport(event: GatewayEvent) {
         if (event.durable) event.cursor?.let { overviewCursor = maxOf(overviewCursor, it) }
         when (event.type) {
+            "connection.events_unsupported" -> {
+                eventsEndpointUnsupported = true
+                _state.update {
+                    it.copy(
+                        ui = it.ui.copy(error = null, reconnectSeconds = null),
+                        // HTTP remains healthy, so preserve normal sending/navigation instead of
+                        // presenting the capability fallback as a failed connection.
+                        harness = it.harness.copy(connection = ConnectionState.Connected),
+                    )
+                }
+                watchSelectedSessionFallback()
+                return
+            }
             "connection.lost" -> {
                 _state.update {
                     it.copy(
@@ -1978,6 +1996,13 @@ private constructor(
                         }
                 }
         }
+    }
+
+    /** Legacy SSE only follows the selected runtime and never accepts the account cursor. */
+    private fun watchSelectedSessionFallback() {
+        if (!appStarted || !eventsEndpointUnsupported) return
+        val api = client ?: return
+        selectedRuntimeId()?.let { runtimeId -> api.watchSession(runtimeId) }
     }
 
     private fun storedSessionId(event: GatewayEvent): SessionId? {

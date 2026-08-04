@@ -271,6 +271,19 @@ class HarnessClient(
                         }
                     } catch (cancelled: CancellationException) {
                         throw cancelled
+                    } catch (unsupported: WebSocketEventsUnsupportedException) {
+                        // A legacy server has no account-wide /events endpoint. This is a
+                        // capability result, not a transient network loss: the ViewModel will
+                        // choose its selected-session SSE fallback instead of retrying forever.
+                        if (isActive && !closed)
+                            eventChannel.send(
+                                GatewayEvent(
+                                    "connection.events_unsupported",
+                                    null,
+                                    mapOf("status" to JsonPrimitive(unsupported.statusCode)),
+                                )
+                            )
+                        return@launch
                     } catch (error: Throwable) {
                         if (isActive && !closed) {
                             eventChannel.send(
@@ -392,7 +405,10 @@ class HarnessClient(
                             t: Throwable,
                             response: Response?,
                         ) {
-                            failure = t
+                            failure =
+                                if (response.isPermanentWebSocketEventsUnsupported())
+                                    WebSocketEventsUnsupportedException(response!!.code)
+                                else t
                             frames.close()
                         }
 
@@ -439,6 +455,9 @@ class HarnessClient(
                 if (watcherSocket === socket) watcherSocket = null
             }
         }
+
+    private fun Response?.isPermanentWebSocketEventsUnsupported(): Boolean =
+        this?.code in WEBSOCKET_EVENTS_UNSUPPORTED_STATUS_CODES
 
     private suspend fun streamUpdates(sessionId: String, sinceId: Long?): Long? =
         withContext(Dispatchers.IO) {
@@ -740,6 +759,8 @@ class HarnessClient(
     private companion object {
         const val NO_CURSOR = Long.MIN_VALUE
         const val RECONNECT_DELAY_MS = 1_000L
+        // 200/204 are successful HTTP responses but cannot complete a websocket upgrade.
+        val WEBSOCKET_EVENTS_UNSUPPORTED_STATUS_CODES = setOf(200, 204, 404, 405, 410, 501)
         val JSON_MEDIA_TYPE = "application/json".toMediaType()
         val SECRET_MEDIA_TYPE = "application/octet-stream".toMediaType()
         val MODEL_OPTIONS =
@@ -758,6 +779,9 @@ class HarnessClient(
             )
     }
 }
+
+private class WebSocketEventsUnsupportedException(val statusCode: Int) :
+    IllegalStateException("Harness /events websocket is unsupported (HTTP $statusCode)")
 
 internal fun JsonElement?.assistantText(): String =
     when (this) {

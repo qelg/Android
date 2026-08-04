@@ -278,7 +278,34 @@ class HarnessClientTest {
             assertEquals(1, events[2].payload["total"]?.jsonPrimitive?.intOrNull)
             assertEquals(1, events[2].payload["in_progress"]?.jsonPrimitive?.intOrNull)
             assertEquals(5L, events[2].payload["event_id"]?.jsonPrimitive?.content?.toLong())
+            // Per-session SSE ids are resumable only within that stream, never account cursors.
+            assertTrue(events.all { !it.durable })
+            assertTrue(events.all { it.cursor == null })
             assertEquals("/sessions/sess_1/messages/updates?since_id=2", server.takeRequest().path)
+        }
+    }
+
+    @Test
+    fun websocketEventsEndpointUnsupportedSwitchesCapabilityWithoutReportingNetworkLoss() =
+        runBlocking {
+            server(MockResponse().setResponseCode(404).setBody("missing")) { client, server ->
+                val received = async { client.events.first() }
+                client.watchEvents(6)
+
+                val event = withTimeout(5_000) { received.await() }
+                assertEquals("connection.events_unsupported", event.type)
+                assertEquals(404, event.payload["status"]?.jsonPrimitive?.intOrNull)
+                assertEquals("/events", server.takeRequest().path)
+            }
+        }
+
+    @Test
+    fun ordinaryWebsocketFailureRemainsOnTheAccountWideRetryPath() = runBlocking {
+        server(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AT_START)) { client, server ->
+            val received = async { client.events.first() }
+            client.watchEvents(6)
+
+            assertEquals("connection.lost", withTimeout(5_000) { received.await() }.type)
         }
     }
 
