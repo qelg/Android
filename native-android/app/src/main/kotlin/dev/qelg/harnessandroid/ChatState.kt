@@ -944,10 +944,10 @@ object ChatReducer {
             val barrier = sync?.value?.loadBarrier
             if (barrier?.loadId != LoadId(generation)) return@updateContent sync
             val pendingValue = sync.value
-            val merged = pendingValue.canonicalMessagesBySourceEventId.toMutableMap()
+            var merged = pendingValue.canonicalMessagesBySourceEventId
             rows.forEachIndexed { index, row ->
                 val id = rowSourceId(row, index)
-                merged[id] = MessageProjection(id, mergeCanonicalRow(merged[id]?.raw, row))
+                merged = mergeCanonicalProjection(merged, id, row)
             }
             // History is canonical for this generation. Remove only overlays it identifies;
             // unrelated concurrent run overlays survive.
@@ -1105,37 +1105,42 @@ object ChatReducer {
                         val content = sync?.value ?: SessionContent()
                         val overlay =
                             content.transientOverlaysByKey.filterValues { item ->
-                                !canonicalMatches(item, event.type, projection)
+                                !canonicalMatches(item, event.type, projection) &&
+                                    !canonicalCoversOverlay(item, projection)
                             }
-                        if (!event.durable)
+                        if (!event.durable) {
+                            val messageIdentity = canonicalMessageIdentity(projection)
+                            val alreadyCanonical =
+                                messageIdentity != null &&
+                                    content.canonicalMessagesBySourceEventId.values.any {
+                                        canonicalMessageIdentity(it.raw) == messageIdentity
+                                    }
                             syncContentLike(
                                 sync,
                                 content.copy(
                                     transientOverlaysByKey =
-                                        overlay +
-                                            (overlayKey(canonicalRowToItem(projection)) to
-                                                canonicalRowToItem(projection))
+                                        if (alreadyCanonical) overlay
+                                        else
+                                            overlay +
+                                                (overlayKey(canonicalRowToItem(projection)) to
+                                                    canonicalRowToItem(projection))
                                 ),
                             )
-                        else
+                        } else {
+                            val canonical =
+                                mergeCanonicalProjection(
+                                    content.canonicalMessagesBySourceEventId,
+                                    source,
+                                    projection,
+                                )
                             syncContentLike(
                                 sync,
                                 content.copy(
-                                    canonicalMessagesBySourceEventId =
-                                        content.canonicalMessagesBySourceEventId +
-                                            (source to
-                                                MessageProjection(
-                                                    source,
-                                                    mergeCanonicalRow(
-                                                        content.canonicalMessagesBySourceEventId[
-                                                                source]
-                                                            ?.raw,
-                                                        projection,
-                                                    ),
-                                                )),
+                                    canonicalMessagesBySourceEventId = canonical,
                                     transientOverlaysByKey = overlay,
                                 ),
                             )
+                        }
                     }
                 if (event.durable && event.type == "message.user")
                     result = acknowledgeSubmissionFromProjection(result, rawSession, projection)
@@ -1157,20 +1162,20 @@ object ChatReducer {
                 updateContent(result, id) { sync ->
                     val content = sync?.value ?: SessionContent()
                     val source = rowSourceId(projection, 0)
+                    val canonical =
+                        mergeCanonicalProjection(
+                            content.canonicalMessagesBySourceEventId,
+                            source,
+                            projection,
+                        )
                     syncContentLike(
                         sync,
                         content.copy(
-                            canonicalMessagesBySourceEventId =
-                                content.canonicalMessagesBySourceEventId +
-                                    (source to
-                                        MessageProjection(
-                                            source,
-                                            mergeCanonicalRow(
-                                                content.canonicalMessagesBySourceEventId[source]
-                                                    ?.raw,
-                                                projection,
-                                            ),
-                                        ))
+                            canonicalMessagesBySourceEventId = canonical,
+                            transientOverlaysByKey =
+                                content.transientOverlaysByKey.filterValues { item ->
+                                    !canonicalCoversOverlay(item, projection)
+                                },
                         ),
                     )
                 }
@@ -1431,6 +1436,40 @@ object ChatReducer {
         if (old == null) incoming
         else JsonObject(old + incoming.filterValues { it !is kotlinx.serialization.json.JsonNull })
 
+    /**
+     * The POST response and the later event notification can describe the same message with
+     * different source-event IDs. Keep the source ID for resume/detail purposes, but only one
+     * projection for the message ID that is used by the timeline.
+     */
+    private fun canonicalMessageIdentity(row: JsonObject): String? {
+        val role = row.string("role")
+        if (role == "tool" || role == "tool_request") return null
+        val metadata = row["metadata"] as? JsonObject
+        val tags = row["tags"] as? JsonObject
+        return sequenceOf(row, metadata, tags)
+            .filterNotNull()
+            .flatMap { value -> sequenceOf("message_id", "id").mapNotNull { value[it] } }
+            .mapNotNull { (it as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull }
+            .firstOrNull()
+    }
+
+    private fun mergeCanonicalProjection(
+        current: Map<EventId, MessageProjection>,
+        source: EventId,
+        incoming: JsonObject,
+    ): Map<EventId, MessageProjection> {
+        val identity = canonicalMessageIdentity(incoming)
+        val duplicate =
+            identity?.let { value ->
+                current.entries.firstOrNull {
+                    it.key != source && canonicalMessageIdentity(it.value.raw) == value
+                }
+            }
+        val previous = current[source]?.raw ?: duplicate?.value?.raw
+        val result = if (duplicate == null) current else current - duplicate.key
+        return result + (source to MessageProjection(source, mergeCanonicalRow(previous, incoming)))
+    }
+
     private fun rowSourceId(row: JsonObject, fallback: Int): EventId =
         EventId(
             row["source_event_id"]?.jsonPrimitive?.longOrNull
@@ -1443,7 +1482,7 @@ object ChatReducer {
         when (item) {
             is ChatItem.Tool -> TransientOverlayKey("tool", item.id.orEmpty())
             is ChatItem.Message ->
-                TransientOverlayKey("message", item.uiKey ?: "${item.role}:${item.text}")
+                TransientOverlayKey("message", item.id ?: item.uiKey ?: "${item.role}:${item.text}")
             else -> TransientOverlayKey(item::class.simpleName.orEmpty(), item.toString())
         }
 

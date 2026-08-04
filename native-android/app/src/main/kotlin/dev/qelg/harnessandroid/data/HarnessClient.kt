@@ -660,17 +660,10 @@ class HarnessClient(
                             (messagePayload["id"] ?: eventRecord["id"] ?: JsonPrimitive("user")),
                     ),
                 )
-            "llm.run.failed" -> {
-                emit(
-                    "error",
-                    values(
-                        "message" to
-                            JsonPrimitive(payload.string("error") ?: "Harness LLM run failed")
-                    ),
-                    finalForFrame = false,
-                )
-                emit("session.inactive", emptyMap())
-            }
+            // A provider failure ends the run, but it is not a transport/client error. Keep the
+            // durable terminal notification so the cursor advances and later events continue to
+            // be reduced without putting a global error banner over the chat.
+            "llm.run.failed" -> emit("session.inactive", emptyMap())
             "session.created" -> emit("session.created", payload)
             "session.renamed" -> emit("session.renamed", payload)
             else -> emit("raw.event", payload)
