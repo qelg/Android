@@ -62,7 +62,11 @@ class ChatViewModelNavigationTest {
                 assertTrue(overviewSessions(selected).none { it.id == SessionId("child") })
 
                 awaitMain {
-                    "/sessions/child/messages" in requests && "/sessions/child/events" in requests
+                    val content =
+                        viewModel.state.value.harness.sessionsById[SessionId("child")]?.content
+                    "/sessions/child/messages" in requests &&
+                        "/sessions/child/events" in requests &&
+                        content is SynchronizedData.Complete
                 }
                 val hydrated =
                     viewModel.state.value.harness.sessionsById.getValue(SessionId("child"))
